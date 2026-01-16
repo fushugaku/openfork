@@ -1,0 +1,9 @@
+Get diagnostics (errors, warnings) from language servers for specified files.
+
+This tool queries LSP (Language Server Protocol) servers to get compilation errors, warnings, and other diagnostics for your code.
+
+Usage notes:
+- Provide file paths to check for diagnostics
+- Returns errors and warnings with line numbers and messages
+- Useful after making edits to verify code correctness
+- Supports any file type with an available language server

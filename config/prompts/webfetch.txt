@@ -1,0 +1,12 @@
+- Fetches content from a specified URL
+- Takes a URL and optional format as input
+- Fetches the URL content, converts to requested format (markdown by default)
+- Returns the content in the specified format
+- Use this tool when you need to retrieve and analyze web content
+
+Usage notes:
+  - The URL must be a fully-formed valid URL starting with http:// or https://
+  - Format options: "markdown" (default), "text", or "html"
+  - This tool is read-only and does not modify any files
+  - Results may be truncated if the content is very large (max 5MB)
+  - Timeout is 30 seconds by default, max 120 seconds

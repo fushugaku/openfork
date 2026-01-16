@@ -1,0 +1,21 @@
+Semantic search across the project codebase. Returns relevant code snippets based on natural language queries.
+
+This is the PREFERRED tool for code exploration and understanding:
+- Use when you need to find code by meaning, not exact text
+- Use for "how / where / what" questions about the codebase
+- Use to understand code behavior and find implementations
+
+When NOT to use:
+- For exact text matches (use grep instead)
+- For finding files by name pattern (use glob instead)
+- When you already know the file path (use read instead)
+
+Examples of good queries:
+- "Where is user authentication handled?"
+- "How does the payment processing work?"
+- "What happens when a user submits the form?"
+
+Examples of bad queries:
+- "AuthService" (too vague, use grep for exact symbol lookup)
+- Single words without context
+- Multiple unrelated questions in one query
