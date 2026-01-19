@@ -1,0 +1,48 @@
+{
+  "name": "learn_topic",
+  "description": "Create a structured learning path for a new topic, from beginner to advanced with curated resources",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "description": "The topic to learn (e.g., 'Kubernetes', 'GraphQL', 'Machine Learning')"
+      },
+      "currentLevel": {
+        "type": "string",
+        "description": "Your current knowledge level: 'none', 'beginner', 'intermediate' (default: none)"
+      },
+      "goal": {
+        "type": "string",
+        "description": "What you want to achieve (e.g., 'deploy production apps', 'pass certification', 'build a project')"
+      },
+      "timeframe": {
+        "type": "string",
+        "description": "How much time you have (e.g., '1 week', '1 month', '3 months')"
+      }
+    },
+    "required": ["topic"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research learning resources for: {{topic}}\n\nCurrent level: {{currentLevel}}\nGoal: {{goal}}\n\nFind:\n- Official documentation and tutorials\n- Best free courses and tutorials\n- Top-rated paid courses (Udemy, Coursera, etc.)\n- Recommended books\n- YouTube channels and video series\n- Interactive platforms (Codecademy, freeCodeCamp, etc.)\n\nNote the quality and recency of each resource.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research the learning path structure for: {{topic}}\n\nFind:\n- Prerequisites and foundational knowledge needed\n- Core concepts that must be learned first\n- Logical progression of topics\n- Common learning roadmaps used by others\n- Certification paths if available\n- Hands-on project ideas at different levels\n\nLook for roadmaps, curriculum outlines, and community recommendations.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research practical learning strategies for: {{topic}}\n\nTimeframe: {{timeframe}}\n\nFind:\n- Project-based learning suggestions\n- Practice exercises and challenges\n- Communities for help (Discord, Reddit, forums)\n- Blogs and newsletters to follow\n- Open source projects to study\n- Mentorship or pair programming opportunities\n\nFocus on resources that provide hands-on experience.",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Create a personalized learning plan for: {{topic}}\n\nCurrent level: {{currentLevel}}\nGoal: {{goal}}\nTimeframe: {{timeframe}}\n\nStructure as:\n1. Prerequisites (what to know first)\n2. Learning Path (phases with milestones)\n   - Phase 1: Foundations\n   - Phase 2: Core Skills\n   - Phase 3: Advanced Topics\n   - Phase 4: Real-World Application\n3. Recommended Resources (prioritized list for each phase)\n4. Projects to Build (progressive difficulty)\n5. Weekly Study Plan (based on timeframe)\n6. How to Measure Progress\n7. Communities & Support\n\nMake it actionable with specific resources and time estimates.",
+      "handoff": "last"
+    }
+  ]
+}

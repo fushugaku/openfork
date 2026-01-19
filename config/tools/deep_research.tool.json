@@ -1,0 +1,44 @@
+{
+  "name": "deep_research",
+  "description": "Perform deep multi-pass web research on a topic, gathering information from multiple angles and synthesizing comprehensive findings",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "description": "The main topic to research thoroughly"
+      },
+      "aspects": {
+        "type": "string",
+        "description": "Specific aspects to focus on (e.g., 'best practices, common pitfalls, performance considerations')"
+      },
+      "depth": {
+        "type": "string",
+        "description": "Research depth: 'overview', 'detailed', or 'exhaustive' (default: detailed)"
+      }
+    },
+    "required": ["topic"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research the fundamentals of: {{topic}}\n\nFocus on:\n- Official documentation and authoritative sources\n- Core concepts and terminology\n- Current state and latest versions/updates\n\nProvide a foundational understanding with source citations.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Now dive deeper into: {{topic}}\n\nFocus on these aspects: {{aspects}}\n\nResearch:\n- Best practices and recommended approaches\n- Common pitfalls and mistakes to avoid\n- Real-world case studies and examples\n- Expert opinions and community consensus\n\nBuild upon the foundational research already gathered.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Complete the research on: {{topic}}\n\nFocus on:\n- Advanced techniques and edge cases\n- Performance considerations and optimization\n- Security implications if applicable\n- Future trends and roadmap\n- Alternative approaches and trade-offs\n\nFill in any gaps from previous research passes.",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Synthesize all the research gathered into a comprehensive, well-structured report on: {{topic}}\n\nOrganize the findings into:\n1. Executive Summary (2-3 sentences)\n2. Key Concepts\n3. Best Practices\n4. Common Pitfalls\n5. Implementation Considerations\n6. Resources & Further Reading\n\nEnsure all claims are backed by the research findings. Highlight any conflicting information found.",
+      "handoff": "last"
+    }
+  ]
+}

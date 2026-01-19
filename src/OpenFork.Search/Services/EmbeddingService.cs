@@ -4,6 +4,8 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using OpenFork.Search.Config;
 
+// JsonException is in System.Text.Json namespace (already included)
+
 namespace OpenFork.Search.Services;
 
 public class EmbeddingService
@@ -31,38 +33,61 @@ public class EmbeddingService
         if (textList.Count == 0)
             return new List<float[]>();
 
-        var results = new List<float[]>();
-        
-        foreach (var text in textList)
+        try
         {
-            var request = new OllamaEmbedRequest
-            {
-                Model = _config.EmbeddingModel,
-                Input = text
-            };
+            var results = new List<float[]>();
 
-            var response = await _httpClient.PostAsJsonAsync(
-                $"{_config.OllamaUrl.TrimEnd('/')}/api/embed",
-                request,
-                cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
+            foreach (var text in textList)
             {
-                _logger.LogWarning("Embedding request failed with status {Status}", response.StatusCode);
-                return null;
+                var request = new OllamaEmbedRequest
+                {
+                    Model = _config.EmbeddingModel,
+                    Input = text
+                };
+
+                var response = await _httpClient.PostAsJsonAsync(
+                    $"{_config.OllamaUrl.TrimEnd('/')}/api/embed",
+                    request,
+                    cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Embedding request failed with status {Status}", response.StatusCode);
+                    return null;
+                }
+
+                OllamaEmbedResponse? result;
+                try
+                {
+                    result = await response.Content.ReadFromJsonAsync<OllamaEmbedResponse>(cancellationToken: cancellationToken);
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning(ex, "Failed to parse embedding response from Ollama");
+                    return null;
+                }
+
+                if (result?.Embeddings == null || result.Embeddings.Count == 0)
+                {
+                    _logger.LogWarning("No embeddings returned from Ollama");
+                    return null;
+                }
+
+                results.Add(result.Embeddings[0]);
             }
 
-            var result = await response.Content.ReadFromJsonAsync<OllamaEmbedResponse>(cancellationToken: cancellationToken);
-            if (result?.Embeddings == null || result.Embeddings.Count == 0)
-            {
-                _logger.LogWarning("No embeddings returned from Ollama");
-                return null;
-            }
-
-            results.Add(result.Embeddings[0]);
+            return results;
         }
-
-        return results;
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Failed to connect to Ollama for embeddings. Is Ollama running?");
+            return null;
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Ollama embedding request timed out.");
+            return null;
+        }
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)

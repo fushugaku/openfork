@@ -16,6 +16,9 @@ public class OpenAiCompatibleProviderClient : IChatProvider
     {
         _httpClient = httpClient;
         _config = config;
+
+        if (string.IsNullOrWhiteSpace(_config.ApiUrl))
+            throw new ArgumentException("ApiUrl is required for OpenAI-compatible provider", nameof(config));
     }
 
     public Task<IAsyncEnumerable<ChatStreamEvent>> StreamChatAsync(ChatCompletionRequest request, CancellationToken cancellationToken)
@@ -154,7 +157,7 @@ public class OpenAiCompatibleProviderClient : IChatProvider
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync();
+            var line = await reader.ReadLineAsync(cancellationToken);
             if (line == null)
             {
                 break;
@@ -184,8 +187,11 @@ public class OpenAiCompatibleProviderClient : IChatProvider
                 continue;
             }
 
-            var delta = choices[0].GetProperty("delta");
+            var choice = choices[0];
+            var delta = choice.GetProperty("delta");
             var content = delta.TryGetProperty("content", out var contentProp) ? contentProp.GetString() : null;
+            var finishReason = choice.TryGetProperty("finish_reason", out var finishProp) && finishProp.ValueKind != JsonValueKind.Null
+                ? finishProp.GetString() : null;
             List<ToolCall>? toolCalls = null;
 
             if (delta.TryGetProperty("tool_calls", out var toolCallsElement) && toolCallsElement.ValueKind == JsonValueKind.Array)
@@ -195,9 +201,15 @@ public class OpenAiCompatibleProviderClient : IChatProvider
                 {
                     var id = toolCallElement.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
                     var type = toolCallElement.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : "function";
-                    var functionElement = toolCallElement.GetProperty("function");
-                    var name = functionElement.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
-                    var arguments = functionElement.TryGetProperty("arguments", out var argsProp) ? argsProp.GetString() : null;
+
+                    string? name = null;
+                    string? arguments = null;
+
+                    if (toolCallElement.TryGetProperty("function", out var functionElement))
+                    {
+                        name = functionElement.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
+                        arguments = functionElement.TryGetProperty("arguments", out var argsProp) ? argsProp.GetString() : null;
+                    }
 
                     toolCalls.Add(new ToolCall
                     {
@@ -215,7 +227,8 @@ public class OpenAiCompatibleProviderClient : IChatProvider
             yield return new ChatStreamEvent
             {
                 DeltaContent = content,
-                DeltaToolCalls = toolCalls
+                DeltaToolCalls = toolCalls,
+                FinishReason = finishReason
             };
         }
     }

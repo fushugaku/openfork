@@ -38,11 +38,20 @@ public class ToolContext
     public string WorkingDirectory { get; set; } = Environment.CurrentDirectory;
     public FileChangeTracker? FileChangeTracker { get; set; }
     public TodoTracker? TodoTracker { get; set; }
-    
+
+    /// <summary>Current session ID for session-aware tools.</summary>
+    public long? SessionId { get; set; }
+
+    /// <summary>Current message ID for message-aware tools.</summary>
+    public long? MessageId { get; set; }
+
+    /// <summary>Current agent configuration for agent-aware tools.</summary>
+    public AgentConfig? AgentConfig { get; set; }
+
     public Func<QuestionRequest, Task<List<QuestionAnswer>>>? AskUserAsync { get; set; }
-    
+
     public Func<string[], Task<List<Diagnostic>>>? GetDiagnosticsAsync { get; set; }
-    
+
     private readonly HashSet<string> _readFiles = new(StringComparer.OrdinalIgnoreCase);
 
     public void MarkFileRead(string filePath)
@@ -56,6 +65,21 @@ public class ToolContext
         var normalized = Path.GetFullPath(filePath);
         return _readFiles.Contains(normalized);
     }
+}
+
+/// <summary>
+/// Minimal agent configuration for tool context.
+/// </summary>
+public class AgentConfig
+{
+    /// <summary>Agent ID.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>Agent slug.</summary>
+    public string Slug { get; set; } = string.Empty;
+
+    /// <summary>Whether this agent can spawn subagents.</summary>
+    public bool CanSpawnSubagents { get; set; }
 }
 
 public class Diagnostic

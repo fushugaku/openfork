@@ -1,0 +1,48 @@
+{
+  "name": "tech_comparison",
+  "description": "Research and compare multiple technologies, frameworks, or tools to help make an informed decision",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "category": {
+        "type": "string",
+        "description": "The category of tools to compare (e.g., 'React state management libraries', 'Python web frameworks')"
+      },
+      "options": {
+        "type": "string",
+        "description": "Specific options to compare, comma-separated (e.g., 'Redux, Zustand, Jotai, MobX')"
+      },
+      "useCase": {
+        "type": "string",
+        "description": "Your specific use case or requirements to consider in the comparison"
+      },
+      "priorities": {
+        "type": "string",
+        "description": "What matters most (e.g., 'performance, developer experience, bundle size, community support')"
+      }
+    },
+    "required": ["category"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research the landscape of: {{category}}\n\nOptions to focus on: {{options}}\n\nFor each option, gather:\n- Official website and documentation\n- GitHub stars, recent activity, maintenance status\n- Core philosophy and design principles\n- Key features and capabilities\n\nProvide factual, up-to-date information with sources.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Now research practical aspects of: {{category}}\n\nFor the options being compared, find:\n- Performance benchmarks and comparisons\n- Bundle size / resource usage\n- Learning curve and documentation quality\n- Community size, ecosystem, and third-party integrations\n- Known limitations and pain points\n- Migration paths and breaking changes history\n\nLook for recent blog posts, benchmarks, and community discussions.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research real-world usage of: {{category}}\n\nFind:\n- Which companies/projects use each option\n- Success stories and failure stories\n- Common migration patterns (what people switch from/to)\n- Job market demand and trends\n- Community sentiment and recent discussions\n\nUse case to consider: {{useCase}}\nPriorities: {{priorities}}",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Create a comprehensive comparison report for: {{category}}\n\nUse case: {{useCase}}\nPriorities: {{priorities}}\n\nStructure the report as:\n1. Quick Recommendation (1-2 sentences for the impatient)\n2. Comparison Table (features, pros, cons for each option)\n3. Detailed Analysis per option\n4. Decision Framework (when to choose each)\n5. Final Recommendation with reasoning\n\nBe objective and acknowledge trade-offs. Don't just pick the most popular option.",
+      "handoff": "last"
+    }
+  ]
+}

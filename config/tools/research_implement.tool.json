@@ -1,0 +1,35 @@
+{
+  "name": "research_and_implement",
+  "description": "Research a topic thoroughly and then create an implementation plan based on findings",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "description": "The topic or problem to research"
+      },
+      "targetPath": {
+        "type": "string",
+        "description": "Where to focus the implementation (optional file path or module)"
+      }
+    },
+    "required": ["topic"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research the following topic thoroughly: {{topic}}. Find best practices, common patterns, potential pitfalls, and any relevant documentation or examples.",
+      "handoff": "full"
+    },
+    {
+      "agent": "explore",
+      "prompt": "Explore the current codebase to understand existing patterns that relate to: {{topic}}. Look for similar implementations or relevant code that could inform our approach.",
+      "handoff": "last"
+    },
+    {
+      "agent": "planner-sub",
+      "prompt": "Based on the research and codebase exploration, create a detailed implementation plan. Target path: {{targetPath}}. Break it into specific, actionable steps with file locations.",
+      "handoff": "last"
+    }
+  ]
+}

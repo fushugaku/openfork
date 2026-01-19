@@ -10,4 +10,10 @@ public class Message
     public string Content { get; set; } = string.Empty;
     public string? ToolCallsJson { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// Whether this message has been compacted (summarized).
+    /// Compacted messages are not loaded in normal conversation flow.
+    /// </summary>
+    public bool IsCompacted { get; set; }
 }

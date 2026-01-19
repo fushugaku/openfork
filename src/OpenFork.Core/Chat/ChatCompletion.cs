@@ -27,6 +27,7 @@ public class ChatStreamEvent
     public string? DeltaContent { get; set; }
     public List<ToolCall>? DeltaToolCalls { get; set; }
     public bool IsDone { get; set; }
+    public string? FinishReason { get; set; }
 }
 
 public class ChatCompletionResponse

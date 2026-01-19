@@ -1,0 +1,44 @@
+{
+  "name": "security_research",
+  "description": "Research security best practices, vulnerabilities, and hardening strategies for a specific technology or domain",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "subject": {
+        "type": "string",
+        "description": "What to research security for (e.g., 'JWT authentication', 'React applications', 'Docker containers')"
+      },
+      "context": {
+        "type": "string",
+        "description": "Additional context about your environment or requirements"
+      },
+      "threatModel": {
+        "type": "string",
+        "description": "Specific threats you're concerned about (e.g., 'XSS, CSRF', 'data breaches', 'insider threats')"
+      }
+    },
+    "required": ["subject"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research common security vulnerabilities and attack vectors for: {{subject}}\n\nContext: {{context}}\n\nFind:\n- OWASP top 10 relevance\n- Known CVEs and security advisories\n- Common attack patterns and exploits\n- Real-world breach examples if available\n\nFocus on authoritative sources: OWASP, NIST, vendor security docs, CVE databases.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research security best practices and hardening for: {{subject}}\n\nThreat model focus: {{threatModel}}\n\nGather:\n- Official security recommendations\n- Industry-standard configurations\n- Defense-in-depth strategies\n- Security headers, configurations, and settings\n- Authentication and authorization best practices\n\nLook for security checklists and hardening guides.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research security tooling and testing for: {{subject}}\n\nFind:\n- Security scanning tools (SAST, DAST)\n- Penetration testing approaches\n- Security monitoring and logging\n- Incident response considerations\n- Compliance requirements (if applicable: SOC2, GDPR, HIPAA)\n\nInclude both free and commercial options.",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Create a security guide for: {{subject}}\nContext: {{context}}\nThreat model: {{threatModel}}\n\nStructure as:\n1. Threat Overview (what you're defending against)\n2. Critical Security Controls (must-have)\n3. Recommended Security Controls (should-have)\n4. Configuration Checklist\n5. Testing & Validation Steps\n6. Monitoring & Detection\n7. Resources (tools, further reading, standards)\n\nPrioritize actionable recommendations. Flag any items that are critical vs nice-to-have.",
+      "handoff": "last"
+    }
+  ]
+}

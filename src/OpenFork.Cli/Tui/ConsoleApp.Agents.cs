@@ -1,201 +1,268 @@
 using OpenFork.Core.Domain;
-using Spectre.Console;
+using Terminal.Gui;
 
 namespace OpenFork.Cli.Tui;
 
 public partial class ConsoleApp
 {
-  private async Task AgentsScreenAsync(CancellationToken cancellationToken = default)
+  private View CreateAgentsView()
   {
-    AnsiConsole.Clear();
-    RenderHeader();
-    RenderContext();
-
     if (_activeProject == null)
     {
-      AnsiConsole.Write(Panels.Error("Select a project first"));
-      Pause();
-      return;
+      FrameHelpers.ShowError("Please select a project first");
+      return new View();
     }
 
     if (_activeSession == null)
     {
-      await EnsureSessionSelectedAsync();
-      if (_activeSession == null) return;
+      FrameHelpers.ShowError("Please select a session first");
+      return new View();
     }
 
-    var agents = await StatusSpinner.RunAsync("Loading agents...", _agents.ListAsync);
-    RenderAgentsTable(agents);
-
-    var choices = BuildAgentChoices(agents);
-    var selection = AnsiConsole.Prompt(
-        Prompts.Selection<MenuChoice>("Agents")
-            .UseConverter(c => c.Label)
-            .AddChoices(choices));
-
-    if (selection.IsBack) return;
-
-    if (selection.IsCreate)
+    var container = new View()
     {
-      await CreateAgentAsync();
-      return;
-    }
-
-    if (!selection.Id.HasValue) return;
-
-    var selected = agents.First(a => a.Id == selection.Id.Value);
-    await AgentDetailScreenAsync(selected);
-  }
-
-  private async Task AgentDetailScreenAsync(AgentProfile agent)
-  {
-    AnsiConsole.Clear();
-    RenderHeader();
-    RenderAgentDetail(agent);
-
-    var action = AnsiConsole.Prompt(
-        Prompts.Selection<string>("Actions")
-            .AddChoices($"{Icons.Check} Set Active", $"{Icons.Settings} Edit", $"🗑️ Delete", $"{Icons.Back} Back"));
-
-    switch (action)
-    {
-      case var a when a.Contains("Set Active"):
-        _activeSession!.ActiveAgentId = agent.Id;
-        _activeSession.ActivePipelineId = null;
-        _activeSession = await StatusSpinner.RunAsync("Saving...", () => _sessions.UpsertAsync(_activeSession));
-        break;
-      case var a when a.Contains("Edit"):
-        await EditAgentAsync(agent);
-        break;
-      case var a when a.Contains("Delete"):
-        if (AnsiConsole.Prompt(Prompts.Confirm($"Delete agent '{agent.Name}'?")))
-        {
-          await StatusSpinner.RunAsync("Deleting...", () => _agents.DeleteAsync(agent.Id));
-        }
-        break;
-    }
-  }
-
-  private async Task CreateAgentAsync()
-  {
-    AnsiConsole.Clear();
-    RenderHeader();
-    AnsiConsole.Write(Panels.Create(new Text("Configure a new AI agent"), "New Agent"));
-    AnsiConsole.WriteLine();
-
-    var name = AnsiConsole.Prompt(Prompts.RequiredText("Agent name"));
-    var providerKey = SelectProviderKey();
-    var model = SelectModel(providerKey);
-
-    AnsiConsole.WriteLine();
-    var systemPrompt = MultilineInput.Read("System prompt");
-
-    var summaryTable = Tables.Create("Field", "Value");
-    summaryTable.AddRow("Name", name);
-    summaryTable.AddRow("Provider", providerKey);
-    summaryTable.AddRow("Model", model);
-    summaryTable.AddRow("System Prompt", systemPrompt.Length > 50 ? $"{systemPrompt[..50]}..." : systemPrompt);
-
-    AnsiConsole.WriteLine();
-    AnsiConsole.Write(Panels.Create(summaryTable, "Review"));
-
-    if (!AnsiConsole.Prompt(Prompts.Confirm("Create this agent?"))) return;
-
-    var agent = new AgentProfile
-    {
-      Name = name,
-      SystemPrompt = systemPrompt,
-      ProviderKey = providerKey,
-      Model = model
+      X = 0,
+      Y = 0,
+      Width = Dim.Fill(),
+      Height = Dim.Fill(),
+      ColorScheme = Theme.Schemes.Base
     };
 
-    await StatusSpinner.RunAsync("Creating agent...", () => _agents.UpsertAsync(agent));
-    AnsiConsole.Write(Panels.Success($"Agent '{name}' created"));
-    Pause();
+    // Keyboard hints at top
+    var hintsLabel = new Label("j/k:Navigate  Enter:Activate  n:New  e:Edit  Del:Delete  Esc:Back")
+    {
+      X = 1,
+      Y = 0,
+      ColorScheme = Theme.Schemes.Muted
+    };
+
+    // Load agents
+    var agents = _agents.ListAsync().GetAwaiter().GetResult();
+
+    // Create ListView
+    var listView = new ListView()
+    {
+      X = 0,
+      Y = 1,
+      Width = Dim.Fill(),
+      Height = Dim.Fill() - 5,
+      AllowsMarking = false,
+      CanFocus = true,
+      ColorScheme = Theme.Schemes.List
+    };
+
+    // Format items
+    var items = agents.Select(a =>
+    {
+      var isActive = _activeSession?.ActiveAgentId == a.Id;
+      var marker = isActive ? $"{Icons.Check} " : "  ";
+      return $"{marker}{Icons.Agent} {a.Name} - {a.ProviderKey}/{a.Model}";
+    }).ToList();
+
+    listView.SetSource(items);
+
+    // Vim-style navigation
+    listView.KeyPress += (e) =>
+    {
+      if (e.KeyEvent.Key == Key.j)
+      {
+        if (listView.SelectedItem < agents.Count - 1)
+          listView.SelectedItem++;
+        e.Handled = true;
+      }
+      else if (e.KeyEvent.Key == Key.k)
+      {
+        if (listView.SelectedItem > 0)
+          listView.SelectedItem--;
+        e.Handled = true;
+      }
+      else if (e.KeyEvent.Key == Key.n)
+      {
+        CreateAgentDialog();
+        e.Handled = true;
+      }
+      else if (e.KeyEvent.Key == Key.e)
+      {
+        if (listView.SelectedItem >= 0 && listView.SelectedItem < agents.Count)
+          EditAgentDialog(agents[listView.SelectedItem]);
+        e.Handled = true;
+      }
+      else if (e.KeyEvent.Key == Key.DeleteChar || e.KeyEvent.Key == Key.Backspace)
+      {
+        if (listView.SelectedItem >= 0 && listView.SelectedItem < agents.Count)
+          _ = DeleteAgent(agents[listView.SelectedItem]);
+        e.Handled = true;
+      }
+      else if (e.KeyEvent.Key == Key.Esc)
+      {
+        ShowMainMenu();
+        e.Handled = true;
+      }
+    };
+
+    // Buttons
+    var buttonY = Pos.Bottom(listView) + 1;
+
+    var newButton = new Button("_New Agent")
+    {
+      X = 1,
+      Y = buttonY,
+      ColorScheme = Theme.Schemes.Button
+    };
+    newButton.Clicked += () => CreateAgentDialog();
+
+    var editButton = new Button("_Edit")
+    {
+      X = Pos.Right(newButton) + Layout.ButtonSpacing,
+      Y = buttonY,
+      ColorScheme = Theme.Schemes.Button
+    };
+    editButton.Clicked += () =>
+    {
+      if (listView.SelectedItem >= 0 && listView.SelectedItem < agents.Count)
+      {
+        var agent = agents[listView.SelectedItem];
+        EditAgentDialog(agent);
+      }
+    };
+
+    var setActiveButton = new Button("Set _Active")
+    {
+      X = Pos.Right(editButton) + Layout.ButtonSpacing,
+      Y = buttonY,
+      ColorScheme = Theme.Schemes.Button
+    };
+    setActiveButton.Clicked += async () =>
+    {
+      if (listView.SelectedItem >= 0 && listView.SelectedItem < agents.Count)
+      {
+        var agent = agents[listView.SelectedItem];
+        await SetActiveAgent(agent);
+      }
+    };
+
+    var deleteButton = new Button("_Delete")
+    {
+      X = Pos.Right(setActiveButton) + Layout.ButtonSpacing,
+      Y = buttonY,
+      ColorScheme = Theme.Schemes.Button
+    };
+    deleteButton.Clicked += async () =>
+    {
+      if (listView.SelectedItem >= 0 && listView.SelectedItem < agents.Count)
+      {
+        var agent = agents[listView.SelectedItem];
+        await DeleteAgent(agent);
+      }
+    };
+
+    var backButton = new Button("_Back")
+    {
+      X = Pos.Right(deleteButton) + Layout.ButtonSpacing,
+      Y = buttonY,
+      ColorScheme = Theme.Schemes.Button
+    };
+    backButton.Clicked += () => ShowMainMenu();
+
+    container.Add(hintsLabel, listView, newButton, editButton, setActiveButton, deleteButton, backButton);
+
+    return container;
   }
 
-  private async Task EditAgentAsync(AgentProfile agent)
+  private void CreateAgentDialog()
   {
-    AnsiConsole.Clear();
-    RenderHeader();
-    AnsiConsole.Write(Panels.Create(new Text($"Editing: {agent.Name}"), "Edit Agent"));
-    AnsiConsole.WriteLine();
-
-    var name = AnsiConsole.Prompt(
-        Prompts.RequiredText("Agent name")
-            .DefaultValue(agent.Name));
+    var name = DialogHelpers.PromptText("New Agent", "Agent name:", "", required: true);
+    if (string.IsNullOrWhiteSpace(name))
+      return;
 
     var providerKey = SelectProviderKey();
     var model = SelectModel(providerKey);
+    var systemPrompt = TextViewHelpers.PromptMultiline("System Prompt", "Enter system prompt:", "");
 
-    AnsiConsole.WriteLine();
-    var systemPrompt = MultilineInput.ReadWithDefault("System prompt", agent.SystemPrompt);
+    if (!DialogHelpers.Confirm("Create Agent", $"Create agent '{name}'?"))
+      return;
 
-    agent.Name = name;
-    agent.SystemPrompt = systemPrompt;
-    agent.ProviderKey = providerKey;
-    agent.Model = model;
+    _ = Task.Run(async () =>
+    {
+      var agent = new AgentProfile
+      {
+        Name = name,
+        SystemPrompt = systemPrompt,
+        ProviderKey = providerKey,
+        Model = model
+      };
 
-    await StatusSpinner.RunAsync("Saving agent...", () => _agents.UpsertAsync(agent));
-    AnsiConsole.Write(Panels.Success("Agent updated"));
-    Pause();
+      await _agents.UpsertAsync(agent);
+
+      Application.MainLoop.Invoke(() =>
+          {
+            ShowAgentsScreen();
+            FrameHelpers.ShowSuccess($"Agent '{name}' created");
+          });
+    });
   }
 
-  private void RenderAgentsTable(List<AgentProfile> agents)
+  private void EditAgentDialog(AgentProfile agent)
   {
-    if (agents.Count == 0)
+    var name = DialogHelpers.PromptText("Edit Agent", "Agent name:", agent.Name, required: true);
+    if (string.IsNullOrWhiteSpace(name))
+      return;
+
+    var providerKey = SelectProviderKey();
+    var model = SelectModel(providerKey);
+    var systemPrompt = TextViewHelpers.PromptMultiline("System Prompt", "Enter system prompt:", agent.SystemPrompt);
+
+    if (!DialogHelpers.Confirm("Update Agent", $"Update agent '{name}'?"))
+      return;
+
+    _ = Task.Run(async () =>
     {
-      AnsiConsole.Write(Panels.Info("No agents configured. Create one to start!"));
-      AnsiConsole.WriteLine();
+      agent.Name = name;
+      agent.SystemPrompt = systemPrompt;
+      agent.ProviderKey = providerKey;
+      agent.Model = model;
+
+      await _agents.UpsertAsync(agent);
+
+      Application.MainLoop.Invoke(() =>
+          {
+            ShowAgentsScreen();
+            FrameHelpers.ShowSuccess("Agent updated");
+          });
+    });
+  }
+
+  private async Task SetActiveAgent(AgentProfile agent)
+  {
+    if (_activeSession == null)
+    {
+      FrameHelpers.ShowError("No active session");
       return;
     }
 
-    var table = Tables.Create("Id", "Name", "Provider", "Model");
-    foreach (var agent in agents)
+    await RunWithProgress("Setting active agent...", async () =>
     {
-      var isActive = _activeSession?.ActiveAgentId == agent.Id;
-      var marker = isActive ? $"[{Theme.Success.ToMarkup()}]{Icons.Check}[/] " : "";
-      table.AddRow(
-          $"{marker}{agent.Id}",
-          $"[{(isActive ? Theme.Success : Theme.Primary).ToMarkup()}]{Markup.Escape(agent.Name)}[/]",
-          $"[{Theme.Secondary.ToMarkup()}]{Markup.Escape(agent.ProviderKey)}[/]",
-          $"[{Theme.Muted.ToMarkup()}]{Markup.Escape(agent.Model)}[/]"
-      );
-    }
+      _activeSession.ActiveAgentId = agent.Id;
+      _activeSession.ActivePipelineId = null;
+      _activeSession = await _sessions.UpsertAsync(_activeSession);
+      UpdateContextDisplay();
+    });
 
-    AnsiConsole.Write(Panels.Create(table, $"{Icons.Agent} Agents"));
-    AnsiConsole.WriteLine();
+    ShowAgentsScreen();
+    FrameHelpers.ShowSuccess($"Agent '{agent.Name}' activated");
   }
 
-  private void RenderAgentDetail(AgentProfile agent)
+  private async Task DeleteAgent(AgentProfile agent)
   {
-    var table = Tables.Create("Property", "Value");
-    table.AddRow("Name", $"[{Theme.Primary.ToMarkup()}]{Markup.Escape(agent.Name)}[/]");
-    table.AddRow("Provider", $"[{Theme.Secondary.ToMarkup()}]{Markup.Escape(agent.ProviderKey)}[/]");
-    table.AddRow("Model", $"[{Theme.Accent.ToMarkup()}]{Markup.Escape(agent.Model)}[/]");
-    table.AddRow("System Prompt", agent.SystemPrompt.Length > 100
-        ? $"[{Theme.Muted.ToMarkup()}]{Markup.Escape(agent.SystemPrompt[..100])}...[/]"
-        : $"[{Theme.Muted.ToMarkup()}]{Markup.Escape(agent.SystemPrompt)}[/]");
+    if (!DialogHelpers.Confirm("Delete Agent", $"Are you sure you want to delete agent '{agent.Name}'?"))
+      return;
 
-    AnsiConsole.Write(Panels.Create(table, $"{Icons.Agent} {agent.Name}"));
-    AnsiConsole.WriteLine();
-  }
-
-  private List<MenuChoice> BuildAgentChoices(List<AgentProfile> agents)
-  {
-    var choices = new List<MenuChoice>
-        {
-            new($"[{Theme.Success.ToMarkup()}]{Icons.Add} Create new agent[/]", null, true, false)
-        };
-
-    choices.AddRange(agents.Select(a =>
+    await RunWithProgress("Deleting agent...", async () =>
     {
-      var isActive = _activeSession?.ActiveAgentId == a.Id;
-      var marker = isActive ? $"[{Theme.Success.ToMarkup()}]{Icons.Check}[/] " : "";
-      return new MenuChoice($"{marker}[{Theme.Primary.ToMarkup()}]{Markup.Escape(a.Name)}[/]  [{Theme.Muted.ToMarkup()}]{a.ProviderKey}/{a.Model}[/]", a.Id, false, false);
-    }));
+      await _agents.DeleteAsync(agent.Id);
+    });
 
-    choices.Add(new MenuChoice($"[{Theme.Muted.ToMarkup()}]{Icons.Back} Back[/]", null, false, true));
-    return choices;
+    ShowAgentsScreen();
+    FrameHelpers.ShowSuccess("Agent deleted");
   }
 }

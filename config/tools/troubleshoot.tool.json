@@ -1,0 +1,39 @@
+{
+  "name": "troubleshoot",
+  "description": "Research solutions for a specific error, bug, or technical problem with comprehensive debugging strategies",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "problem": {
+        "type": "string",
+        "description": "The error message, bug description, or problem you're facing"
+      },
+      "technology": {
+        "type": "string",
+        "description": "The technology stack involved (e.g., 'Node.js 20, Express, PostgreSQL')"
+      },
+      "context": {
+        "type": "string",
+        "description": "Additional context (what you were doing, environment details, what you've tried)"
+      }
+    },
+    "required": ["problem"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research the error/problem: {{problem}}\n\nTechnology: {{technology}}\n\nSearch for:\n- Exact error message matches\n- Similar issues on Stack Overflow\n- GitHub issues in relevant repositories\n- Official documentation on this error\n\nFind the most common causes and solutions.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Dig deeper into solutions for: {{problem}}\n\nContext: {{context}}\n\nResearch:\n- Step-by-step debugging approaches\n- Environment-specific solutions\n- Version-specific fixes\n- Workarounds if no direct fix exists\n- Related issues that might have the same root cause\n\nLook for solutions that match the specific context provided.",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Create a troubleshooting guide for: {{problem}}\n\nTechnology: {{technology}}\nContext: {{context}}\n\nStructure as:\n1. Problem Summary\n2. Most Likely Causes (ranked by probability)\n3. Quick Fixes to Try First\n4. Detailed Solutions\n   - Solution A: [steps]\n   - Solution B: [steps]\n   - Solution C: [steps]\n5. Debugging Steps (if solutions don't work)\n6. Prevention (how to avoid this in the future)\n7. Related Issues to Check\n\nProvide specific commands, code snippets, and configuration changes where applicable.",
+      "handoff": "last"
+    }
+  ]
+}

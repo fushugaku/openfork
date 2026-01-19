@@ -1,226 +1,270 @@
 using OpenFork.Core.Domain;
-using Spectre.Console;
+using Terminal.Gui;
 
 namespace OpenFork.Cli.Tui;
 
 public partial class ConsoleApp
 {
-    private async Task PipelinesScreenAsync(CancellationToken cancellationToken = default)
+    private View CreatePipelinesView()
     {
-        AnsiConsole.Clear();
-        RenderHeader();
-        RenderContext();
-
         if (_activeProject == null)
         {
-            AnsiConsole.Write(Panels.Error("Select a project first"));
-            Pause();
-            return;
+            FrameHelpers.ShowError("Please select a project first");
+            return new View();
         }
 
         if (_activeSession == null)
         {
-            await EnsureSessionSelectedAsync();
-            if (_activeSession == null) return;
+            FrameHelpers.ShowError("Please select a session first");
+            return new View();
         }
 
-        var pipelines = await StatusSpinner.RunAsync("Loading pipelines...", _pipelines.ListAsync);
-        RenderPipelinesTable(pipelines);
-
-        var choices = BuildPipelineChoices(pipelines);
-        var selection = AnsiConsole.Prompt(
-            Prompts.Selection<MenuChoice>("Pipelines")
-                .UseConverter(c => c.Label)
-                .AddChoices(choices));
-
-        if (selection.IsBack) return;
-
-        if (selection.IsCreate)
+        var container = new View()
         {
-            await CreatePipelineAsync();
-            return;
-        }
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            ColorScheme = Theme.Schemes.Base
+        };
 
-        if (!selection.Id.HasValue) return;
+        // Keyboard hints at top
+        var hintsLabel = new Label("j/k:Navigate  Enter:Activate  n:New  Del:Delete  Esc:Back")
+        {
+            X = 1,
+            Y = 0,
+            ColorScheme = Theme.Schemes.Muted
+        };
 
-        var selected = pipelines.First(p => p.Id == selection.Id.Value);
-        await PipelineDetailScreenAsync(selected);
+        // Load pipelines
+        var pipelines = _pipelines.ListAsync().GetAwaiter().GetResult();
+
+        // Create ListView
+        var listView = new ListView()
+        {
+            X = 0,
+            Y = 1,
+            Width = Dim.Fill(),
+            Height = Dim.Fill() - 5,
+            AllowsMarking = false,
+            CanFocus = true,
+            ColorScheme = Theme.Schemes.List
+        };
+
+        // Format items
+        var items = pipelines.Select(p =>
+        {
+            var isActive = _activeSession?.ActivePipelineId == p.Id;
+            var marker = isActive ? $"{Icons.Check} " : "  ";
+            var desc = string.IsNullOrWhiteSpace(p.Description) ? "" : $" - {p.Description}";
+            return $"{marker}{Icons.Pipeline} {p.Name}{desc}";
+        }).ToList();
+
+        listView.SetSource(items);
+
+        // Vim-style navigation
+        listView.KeyPress += (e) =>
+        {
+            if (e.KeyEvent.Key == Key.j)
+            {
+                if (listView.SelectedItem < pipelines.Count - 1)
+                    listView.SelectedItem++;
+                e.Handled = true;
+            }
+            else if (e.KeyEvent.Key == Key.k)
+            {
+                if (listView.SelectedItem > 0)
+                    listView.SelectedItem--;
+                e.Handled = true;
+            }
+            else if (e.KeyEvent.Key == Key.n)
+            {
+                CreatePipelineDialog();
+                e.Handled = true;
+            }
+            else if (e.KeyEvent.Key == Key.DeleteChar || e.KeyEvent.Key == Key.Backspace)
+            {
+                if (listView.SelectedItem >= 0 && listView.SelectedItem < pipelines.Count)
+                    _ = DeletePipeline(pipelines[listView.SelectedItem]);
+                e.Handled = true;
+            }
+            else if (e.KeyEvent.Key == Key.Esc)
+            {
+                ShowMainMenu();
+                e.Handled = true;
+            }
+        };
+
+        // Buttons
+        var buttonY = Pos.Bottom(listView) + 1;
+
+        var newButton = new Button("_New Pipeline")
+        {
+            X = 1,
+            Y = buttonY,
+            ColorScheme = Theme.Schemes.Button
+        };
+        newButton.Clicked += () => CreatePipelineDialog();
+
+        var setActiveButton = new Button("Set _Active")
+        {
+            X = Pos.Right(newButton) + Layout.ButtonSpacing,
+            Y = buttonY,
+            ColorScheme = Theme.Schemes.Button
+        };
+        setActiveButton.Clicked += async () =>
+        {
+            if (listView.SelectedItem >= 0 && listView.SelectedItem < pipelines.Count)
+            {
+                var pipeline = pipelines[listView.SelectedItem];
+                await SetActivePipeline(pipeline);
+            }
+        };
+
+        var deleteButton = new Button("_Delete")
+        {
+            X = Pos.Right(setActiveButton) + Layout.ButtonSpacing,
+            Y = buttonY,
+            ColorScheme = Theme.Schemes.Button
+        };
+        deleteButton.Clicked += async () =>
+        {
+            if (listView.SelectedItem >= 0 && listView.SelectedItem < pipelines.Count)
+            {
+                var pipeline = pipelines[listView.SelectedItem];
+                await DeletePipeline(pipeline);
+            }
+        };
+
+        var backButton = new Button("_Back")
+        {
+            X = Pos.Right(deleteButton) + Layout.ButtonSpacing,
+            Y = buttonY,
+            ColorScheme = Theme.Schemes.Button
+        };
+        backButton.Clicked += () => ShowMainMenu();
+
+        container.Add(hintsLabel, listView, newButton, setActiveButton, deleteButton, backButton);
+
+        return container;
     }
 
-    private async Task PipelineDetailScreenAsync(Pipeline pipeline)
+    private void CreatePipelineDialog()
     {
-        AnsiConsole.Clear();
-        RenderHeader();
+        var name = DialogHelpers.PromptText("New Pipeline", "Pipeline name:", "", required: true);
+        if (string.IsNullOrWhiteSpace(name))
+            return;
 
-        var steps = await StatusSpinner.RunAsync("Loading steps...", () => _pipelines.ListStepsAsync(pipeline.Id));
-        RenderPipelineDetail(pipeline, steps);
+        var description = DialogHelpers.PromptText("Pipeline Description", "Description (optional):", "", required: false);
 
-        var action = AnsiConsole.Prompt(
-            Prompts.Selection<string>("Actions")
-                .AddChoices($"{Icons.Check} Set Active", $"{Icons.Settings} Edit", "🗑️ Delete", $"{Icons.Back} Back"));
-
-        switch (action)
+        _ = Task.Run(async () =>
         {
-            case var a when a.Contains("Set Active"):
-                _activeSession!.ActivePipelineId = pipeline.Id;
-                _activeSession.ActiveAgentId = null;
-                _activeSession = await StatusSpinner.RunAsync("Saving...", () => _sessions.UpsertAsync(_activeSession));
-                break;
-            case var a when a.Contains("Edit"):
-                await EditPipelineAsync(pipeline);
-                break;
-            case var a when a.Contains("Delete"):
-                if (AnsiConsole.Prompt(Prompts.Confirm($"Delete pipeline '{pipeline.Name}'?")))
+            var pipeline = await _pipelines.UpsertAsync(new Pipeline
+            {
+                Name = name,
+                Description = description
+            });
+
+            // Configure steps
+            var agents = await _agents.ListAsync();
+            if (agents.Count > 0)
+            {
+                Application.MainLoop.Invoke(() =>
                 {
-                    await StatusSpinner.RunAsync("Deleting...", () => _pipelines.DeleteAsync(pipeline.Id));
-                }
-                break;
-        }
+                    ConfigurePipelineStepsDialog(pipeline, agents);
+                });
+            }
+            else
+            {
+                Application.MainLoop.Invoke(() =>
+                {
+                    ShowPipelinesScreen();
+                    FrameHelpers.ShowSuccess($"Pipeline '{name}' created (no agents available for steps)");
+                });
+            }
+        });
     }
 
-    private async Task CreatePipelineAsync()
+    private void ConfigurePipelineStepsDialog(Pipeline pipeline, List<AgentProfile> agents)
     {
-        AnsiConsole.Clear();
-        RenderHeader();
-        AnsiConsole.Write(Panels.Create(new Text("Configure a new agent pipeline"), "New Pipeline"));
-        AnsiConsole.WriteLine();
-
-        var name = AnsiConsole.Prompt(Prompts.RequiredText("Pipeline name"));
-        var description = AnsiConsole.Prompt(Prompts.OptionalText("Description"));
-
-        var pipeline = await StatusSpinner.RunAsync("Creating pipeline...",
-            () => _pipelines.UpsertAsync(new Pipeline { Name = name, Description = description }));
-
-        await ConfigurePipelineStepsAsync(pipeline);
-        AnsiConsole.Write(Panels.Success($"Pipeline '{name}' created"));
-        Pause();
-    }
-
-    private async Task EditPipelineAsync(Pipeline pipeline)
-    {
-        AnsiConsole.Clear();
-        RenderHeader();
-        AnsiConsole.Write(Panels.Create(new Text($"Editing: {pipeline.Name}"), "Edit Pipeline"));
-        AnsiConsole.WriteLine();
-
-        var name = AnsiConsole.Prompt(
-            Prompts.RequiredText("Pipeline name")
-                .DefaultValue(pipeline.Name));
-
-        var description = AnsiConsole.Prompt(
-            Prompts.OptionalText("Description", pipeline.Description ?? ""));
-
-        pipeline.Name = name;
-        pipeline.Description = description;
-
-        await StatusSpinner.RunAsync("Saving pipeline...", () => _pipelines.UpsertAsync(pipeline));
-        await ConfigurePipelineStepsAsync(pipeline);
-    }
-
-    private async Task ConfigurePipelineStepsAsync(Pipeline pipeline)
-    {
-        var agents = await StatusSpinner.RunAsync("Loading agents...", _agents.ListAsync);
-
-        if (agents.Count == 0)
+        var stepCountText = DialogHelpers.PromptText("Pipeline Steps", "Number of steps:", "2", required: true);
+        if (!int.TryParse(stepCountText, out var stepCount) || stepCount < 1)
         {
-            AnsiConsole.Write(Panels.Error("No agents available. Create an agent first."));
+            ShowPipelinesScreen();
             return;
         }
 
-        var stepCount = AnsiConsole.Prompt(Prompts.Number("Number of steps", 2));
         var steps = new List<PipelineStep>();
 
         for (var i = 0; i < stepCount; i++)
         {
-            AnsiConsole.WriteLine();
-            AnsiConsole.Write(new Rule($"[{Theme.Primary.ToMarkup()}]Step {i + 1}[/]").LeftJustified());
+            var agent = DialogHelpers.PromptSelection($"Step {i + 1} - Select Agent", agents, a => $"{a.Name} ({a.Model})");
+            if (agent == null)
+            {
+                ShowPipelinesScreen();
+                return;
+            }
 
-            var agentChoice = AnsiConsole.Prompt(
-                Prompts.Selection<AgentProfile>("Select agent")
-                    .UseConverter(a => $"{Icons.Agent} {a.Name} [{Theme.Muted.ToMarkup()}]{a.Model}[/]")
-                    .AddChoices(agents));
-
-            var handoff = AnsiConsole.Prompt(
-                Prompts.Selection<string>("Handoff mode")
-                    .AddChoices("full - Pass entire conversation", "last - Pass only last response")
-                    .UseConverter(h => h));
+            var handoffModes = new[] { "full - Pass entire conversation", "last - Pass only last response" };
+            var handoffMode = DialogHelpers.PromptSelection($"Step {i + 1} - Handoff Mode", handoffModes, h => h);
+            if (handoffMode == null)
+            {
+                ShowPipelinesScreen();
+                return;
+            }
 
             steps.Add(new PipelineStep
             {
                 PipelineId = pipeline.Id,
                 OrderIndex = i,
-                AgentId = agentChoice.Id,
-                HandoffMode = handoff.Split(' ')[0]
+                AgentId = agent.Id,
+                HandoffMode = handoffMode.Split(' ')[0]
             });
         }
 
-        await StatusSpinner.RunAsync("Saving steps...", () => _pipelines.UpsertStepsAsync(pipeline.Id, steps));
+        _ = Task.Run(async () =>
+        {
+            await _pipelines.UpsertStepsAsync(pipeline.Id, steps);
+
+            Application.MainLoop.Invoke(() =>
+            {
+                ShowPipelinesScreen();
+                FrameHelpers.ShowSuccess($"Pipeline '{pipeline.Name}' created with {steps.Count} steps");
+            });
+        });
     }
 
-    private void RenderPipelinesTable(List<Pipeline> pipelines)
+    private async Task SetActivePipeline(Pipeline pipeline)
     {
-        if (pipelines.Count == 0)
+        if (_activeSession == null)
         {
-            AnsiConsole.Write(Panels.Info("No pipelines configured. Create one to chain agents!"));
-            AnsiConsole.WriteLine();
+            FrameHelpers.ShowError("No active session");
             return;
         }
 
-        var table = Tables.Create("Id", "Name", "Description");
-        foreach (var pipeline in pipelines)
+        await RunWithProgress("Setting active pipeline...", async () =>
         {
-            var isActive = _activeSession?.ActivePipelineId == pipeline.Id;
-            var marker = isActive ? $"[{Theme.Success.ToMarkup()}]{Icons.Check}[/] " : "";
-            table.AddRow(
-                $"{marker}{pipeline.Id}",
-                $"[{(isActive ? Theme.Success : Theme.Primary).ToMarkup()}]{Markup.Escape(pipeline.Name)}[/]",
-                $"[{Theme.Muted.ToMarkup()}]{Markup.Escape(pipeline.Description ?? "")}[/]"
-            );
-        }
+            _activeSession.ActivePipelineId = pipeline.Id;
+            _activeSession.ActiveAgentId = null;
+            _activeSession = await _sessions.UpsertAsync(_activeSession);
+            UpdateContextDisplay();
+        });
 
-        AnsiConsole.Write(Panels.Create(table, $"{Icons.Pipeline} Pipelines"));
-        AnsiConsole.WriteLine();
+        ShowPipelinesScreen();
+        FrameHelpers.ShowSuccess($"Pipeline '{pipeline.Name}' activated");
     }
 
-    private void RenderPipelineDetail(Pipeline pipeline, List<PipelineStep> steps)
+    private async Task DeletePipeline(Pipeline pipeline)
     {
-        var agents = _agents.ListAsync().GetAwaiter().GetResult();
-        var agentMap = agents.ToDictionary(a => a.Id, a => a.Name);
+        if (!DialogHelpers.Confirm("Delete Pipeline", $"Are you sure you want to delete pipeline '{pipeline.Name}'?"))
+            return;
 
-        var table = Tables.Create("Order", "Agent", "Handoff");
-        foreach (var step in steps.OrderBy(s => s.OrderIndex))
+        await RunWithProgress("Deleting pipeline...", async () =>
         {
-            agentMap.TryGetValue(step.AgentId, out var name);
-            table.AddRow(
-                $"[{Theme.Accent.ToMarkup()}]{step.OrderIndex + 1}[/]",
-                $"[{Theme.Primary.ToMarkup()}]{Markup.Escape(name ?? $"#{step.AgentId}")}[/]",
-                $"[{Theme.Muted.ToMarkup()}]{Markup.Escape(step.HandoffMode)}[/]"
-            );
-        }
+            await _pipelines.DeleteAsync(pipeline.Id);
+        });
 
-        AnsiConsole.Write(Panels.Create(table, $"{Icons.Pipeline} {pipeline.Name}"));
-        if (!string.IsNullOrWhiteSpace(pipeline.Description))
-        {
-            AnsiConsole.Write(Panels.Info(pipeline.Description));
-        }
-        AnsiConsole.WriteLine();
-    }
-
-    private List<MenuChoice> BuildPipelineChoices(List<Pipeline> pipelines)
-    {
-        var choices = new List<MenuChoice>
-        {
-            new($"[{Theme.Success.ToMarkup()}]{Icons.Add} Create new pipeline[/]", null, true, false)
-        };
-
-        choices.AddRange(pipelines.Select(p =>
-        {
-            var isActive = _activeSession?.ActivePipelineId == p.Id;
-            var marker = isActive ? $"[{Theme.Success.ToMarkup()}]{Icons.Check}[/] " : "";
-            return new MenuChoice($"{marker}[{Theme.Primary.ToMarkup()}]{Markup.Escape(p.Name)}[/]  [{Theme.Muted.ToMarkup()}]{Markup.Escape(p.Description ?? "")}[/]", p.Id, false, false);
-        }));
-
-        choices.Add(new MenuChoice($"[{Theme.Muted.ToMarkup()}]{Icons.Back} Back[/]", null, false, true));
-        return choices;
+        ShowPipelinesScreen();
+        FrameHelpers.ShowSuccess("Pipeline deleted");
     }
 }

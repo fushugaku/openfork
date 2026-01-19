@@ -56,7 +56,7 @@ public class GlobTool : ITool
             if (!Directory.Exists(searchPath))
                 return new ToolResult(false, $"Directory not found: {searchPath}");
 
-            var regex = GlobToRegex(args.Pattern);
+            var regex = GlobHelper.GlobToRegex(args.Pattern);
             var files = new List<(string path, DateTime mtime)>();
             var truncated = false;
 
@@ -115,7 +115,11 @@ public class GlobTool : ITool
             {
                 files = Directory.GetFiles(currentDir);
             }
-            catch
+            catch (UnauthorizedAccessException)
+            {
+                continue;
+            }
+            catch (IOException)
             {
                 continue;
             }
@@ -128,7 +132,11 @@ public class GlobTool : ITool
             {
                 subdirs = Directory.GetDirectories(currentDir);
             }
-            catch
+            catch (UnauthorizedAccessException)
+            {
+                continue;
+            }
+            catch (IOException)
             {
                 continue;
             }
@@ -140,72 +148,6 @@ public class GlobTool : ITool
                     stack.Push(subdir);
             }
         }
-    }
-
-    private static Regex GlobToRegex(string pattern)
-    {
-        var regexPattern = "^";
-        var i = 0;
-        
-        while (i < pattern.Length)
-        {
-            var c = pattern[i];
-            
-            if (c == '*')
-            {
-                if (i + 1 < pattern.Length && pattern[i + 1] == '*')
-                {
-                    if (i + 2 < pattern.Length && (pattern[i + 2] == '/' || pattern[i + 2] == '\\'))
-                    {
-                        regexPattern += "(?:.*[\\\\/])?";
-                        i += 3;
-                    }
-                    else
-                    {
-                        regexPattern += ".*";
-                        i += 2;
-                    }
-                }
-                else
-                {
-                    regexPattern += "[^\\\\/]*";
-                    i++;
-                }
-            }
-            else if (c == '?')
-            {
-                regexPattern += "[^\\\\/]";
-                i++;
-            }
-            else if (c == '{')
-            {
-                var end = pattern.IndexOf('}', i);
-                if (end > i)
-                {
-                    var options = pattern[(i + 1)..end].Split(',');
-                    regexPattern += "(" + string.Join("|", options.Select(Regex.Escape)) + ")";
-                    i = end + 1;
-                }
-                else
-                {
-                    regexPattern += Regex.Escape(c.ToString());
-                    i++;
-                }
-            }
-            else if (c == '/' || c == '\\')
-            {
-                regexPattern += "[\\\\/]";
-                i++;
-            }
-            else
-            {
-                regexPattern += Regex.Escape(c.ToString());
-                i++;
-            }
-        }
-        
-        regexPattern += "$";
-        return new Regex(regexPattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
     private record GlobArgs(

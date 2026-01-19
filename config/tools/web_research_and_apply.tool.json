@@ -1,0 +1,59 @@
+{
+  "name": "web_research_and_apply",
+  "description": "Research a topic on the web, explore local codebase for context, then create an implementation plan",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "description": "The topic to research"
+      },
+      "localContext": {
+        "type": "string",
+        "description": "What to look for in the local codebase for context"
+      },
+      "goal": {
+        "type": "string",
+        "description": "What you want to achieve with this knowledge"
+      }
+    },
+    "required": ["topic", "goal"]
+  },
+  "pipeline": [
+    {
+      "type": "tool",
+      "tool": "websearch",
+      "name": "Web Search",
+      "arguments": "{\"query\": \"{{topic}} best practices implementation guide\"}",
+      "handoff": "none"
+    },
+    {
+      "type": "agent",
+      "agent": "researcher",
+      "name": "Deep Research",
+      "prompt": "Based on these search results:\n{{_lastOutput}}\n\nResearch the topic '{{topic}}' in more depth. Find specific implementation details, code examples, and best practices.",
+      "handoff": "full"
+    },
+    {
+      "type": "tool",
+      "tool": "grep",
+      "name": "Find Local Code",
+      "arguments": "{\"pattern\": \"{{localContext}}\"}",
+      "handoff": "none"
+    },
+    {
+      "type": "agent",
+      "agent": "explore",
+      "name": "Explore Local",
+      "prompt": "These files may be relevant to our goal:\n{{_lastOutput}}\n\nExplore them to understand the current implementation and patterns used.",
+      "handoff": "last"
+    },
+    {
+      "type": "agent",
+      "agent": "planner-sub",
+      "name": "Create Plan",
+      "prompt": "Goal: {{goal}}\n\nWeb research findings:\n{{_fullHistory}}\n\nCreate a detailed implementation plan that applies the researched best practices to the local codebase.",
+      "handoff": "none"
+    }
+  ]
+}

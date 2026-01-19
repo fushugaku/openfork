@@ -1,0 +1,41 @@
+{
+  "name": "find_and_analyze",
+  "description": "Find files matching a pattern, then have an agent analyze them",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Glob pattern to find files (e.g., '**/*.cs', 'src/**/*.ts')"
+      },
+      "analysis": {
+        "type": "string",
+        "description": "What kind of analysis to perform (e.g., 'find bugs', 'suggest improvements', 'document')"
+      }
+    },
+    "required": ["pattern", "analysis"]
+  },
+  "pipeline": [
+    {
+      "type": "tool",
+      "tool": "glob",
+      "name": "Find Files",
+      "arguments": "{\"pattern\": \"{{pattern}}\"}",
+      "handoff": "none"
+    },
+    {
+      "type": "agent",
+      "agent": "explore",
+      "name": "Read Files",
+      "prompt": "Read the contents of these files:\n{{_lastOutput}}\n\nProvide a summary of each file's purpose and key components.",
+      "handoff": "none"
+    },
+    {
+      "type": "agent",
+      "agent": "general",
+      "name": "Analyze",
+      "prompt": "Based on the file contents below, perform this analysis: {{analysis}}\n\nFile contents:\n{{_lastOutput}}",
+      "handoff": "none"
+    }
+  ]
+}

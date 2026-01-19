@@ -1,0 +1,30 @@
+{
+  "name": "deep_code_review",
+  "description": "Perform a comprehensive code review with multiple perspectives including exploration and analysis",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "files": {
+        "type": "string",
+        "description": "Glob pattern for files to review (e.g., 'src/**/*.cs')"
+      },
+      "focus": {
+        "type": "string",
+        "description": "What aspects to focus on (e.g., 'security', 'performance', 'maintainability', 'all')"
+      }
+    },
+    "required": ["files"]
+  },
+  "pipeline": [
+    {
+      "agent": "explore",
+      "prompt": "Find and read all files matching the pattern: {{files}}. Identify the main components, their relationships, and overall structure.",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Review the code with focus on: {{focus}}. Analyze for:\n- Bugs and potential issues\n- Security vulnerabilities\n- Performance problems\n- Code style and best practices\n- Architecture concerns\n\nProvide specific, actionable feedback with file and line references.",
+      "handoff": "last"
+    }
+  ]
+}

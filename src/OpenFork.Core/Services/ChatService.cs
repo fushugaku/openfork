@@ -24,7 +24,7 @@ public class HistoryEntry
 public class ChatService
 {
     private readonly IMessageRepository _messages;
-    private readonly IAgentRepository _agents;
+    private readonly AgentService _agents;
     private readonly IPipelineRepository _pipelines;
     private readonly IProjectRepository _projects;
     private readonly IProviderResolver _providers;
@@ -34,7 +34,7 @@ public class ChatService
 
     public ChatService(
         IMessageRepository messages,
-        IAgentRepository agents,
+        AgentService agents,
         IPipelineRepository pipelines,
         IProjectRepository projects,
         IProviderResolver providers,
@@ -89,6 +89,8 @@ public class ChatService
         }
 
         var project = await _projects.GetAsync(session.ProjectId);
+        _logger.LogInformation("Session ProjectId: {ProjectId}, Project found: {Found}, RootPath: {RootPath}",
+            session.ProjectId, project != null, project?.RootPath ?? "(null)");
         var workingDir = project?.RootPath ?? Environment.CurrentDirectory;
         _logger.LogInformation("Tool context working directory: {WorkingDir}", workingDir);
 
@@ -191,9 +193,9 @@ public class ChatService
             var estimatedTokens = EstimateTokens(chatMessages);
             if (estimatedTokens > tokenThreshold)
             {
-                _logger.LogInformation("Token usage ({Tokens}) exceeds threshold ({Threshold}), compacting history", 
+                _logger.LogInformation("Token usage ({Tokens}) exceeds threshold ({Threshold}), compacting history",
                     estimatedTokens, tokenThreshold);
-                
+
                 if (onUpdate != null)
                     await onUpdate(new AgentStreamUpdate(agent.Name, "\n📦 Compacting context...\n", false));
 
@@ -209,52 +211,127 @@ public class ChatService
             };
 
             var provider = _providers.Resolve(agent.ProviderKey);
-            var stream = await provider.StreamChatAsync(request, cancellationToken);
-            iteration++;
 
-            var deltaContent = "";
+            // Retry loop for provider errors
+            var retryAttempt = 0;
+            var deltaContentBuilder = new System.Text.StringBuilder();
+            var outputBuilder = new System.Text.StringBuilder(output);
             var toolCalls = new List<ToolCall>();
             var toolCallBuffers = new Dictionary<int, ToolCall>();
+            var streamSucceeded = false;
+            string? finishReason = null;
 
-            await foreach (var chunk in stream.WithCancellation(cancellationToken))
+            while (!streamSucceeded && retryAttempt <= RetryHelper.MaxRetries)
             {
-                if (!string.IsNullOrEmpty(chunk.DeltaContent))
+                try
                 {
-                    deltaContent += chunk.DeltaContent;
-                    output += chunk.DeltaContent;
-
-                    if (onUpdate != null)
-                        await onUpdate(new AgentStreamUpdate(agent.Name, chunk.DeltaContent, false));
-                }
-
-                if (chunk.DeltaToolCalls != null)
-                {
-                    foreach (var tc in chunk.DeltaToolCalls)
+                    if (retryAttempt > 0)
                     {
-                        if (!string.IsNullOrEmpty(tc.Id))
-                        {
-                            var idx = toolCallBuffers.Count;
-                            toolCallBuffers[idx] = new ToolCall
-                            {
-                                Id = tc.Id,
-                                Type = tc.Type,
-                                Function = new ToolFunction
-                                {
-                                    Name = tc.Function.Name,
-                                    Arguments = tc.Function.Arguments
-                                }
-                            };
-                        }
-                        else if (toolCallBuffers.Count > 0)
-                        {
-                            var lastIdx = toolCallBuffers.Count - 1;
-                            toolCallBuffers[lastIdx].Function.Arguments += tc.Function.Arguments;
-                        }
+                        var delay = RetryHelper.GetDelayMs(retryAttempt);
+                        _logger.LogWarning("Retrying request (attempt {Attempt}/{Max}) after {Delay}ms...",
+                            retryAttempt, RetryHelper.MaxRetries, delay);
+
+                        if (onUpdate != null)
+                            await onUpdate(new AgentStreamUpdate(agent.Name, $"\n⏳ Retrying ({retryAttempt}/{RetryHelper.MaxRetries})...\n", false));
+
+                        await Task.Delay(delay, cancellationToken);
+
+                        // Clear buffers for retry
+                        deltaContentBuilder.Clear();
+                        outputBuilder.Clear();
+                        outputBuilder.Append(output);
+                        toolCallBuffers.Clear();
                     }
+
+                    var stream = await provider.StreamChatAsync(request, cancellationToken);
+
+                    await foreach (var chunk in stream.WithCancellation(cancellationToken))
+                    {
+                        if (!string.IsNullOrEmpty(chunk.DeltaContent))
+                        {
+                            deltaContentBuilder.Append(chunk.DeltaContent);
+                            outputBuilder.Append(chunk.DeltaContent);
+
+                            if (onUpdate != null)
+                                await onUpdate(new AgentStreamUpdate(agent.Name, chunk.DeltaContent, false));
+                        }
+
+                        if (chunk.DeltaToolCalls != null)
+                        {
+                            foreach (var tc in chunk.DeltaToolCalls)
+                            {
+                                if (!string.IsNullOrEmpty(tc.Id))
+                                {
+                                    var idx = toolCallBuffers.Count;
+                                    toolCallBuffers[idx] = new ToolCall
+                                    {
+                                        Id = tc.Id,
+                                        Type = tc.Type,
+                                        Function = new ToolFunction
+                                        {
+                                            Name = tc.Function.Name,
+                                            Arguments = tc.Function.Arguments
+                                        }
+                                    };
+                                }
+                                else if (toolCallBuffers.Count > 0)
+                                {
+                                    var lastIdx = toolCallBuffers.Count - 1;
+                                    toolCallBuffers[lastIdx].Function.Arguments += tc.Function.Arguments;
+                                }
+                            }
+                        }
+
+                        // Capture finish reason if available
+                        if (!string.IsNullOrEmpty(chunk.FinishReason))
+                            finishReason = chunk.FinishReason;
+                    }
+
+                    streamSucceeded = true;
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    retryAttempt++;
+
+                    if (RetryHelper.IsRetryable(ex) && retryAttempt <= RetryHelper.MaxRetries)
+                    {
+                        var reason = RetryHelper.GetRetryReason(ex);
+                        _logger.LogWarning(ex, "Retryable error: {Reason}. Will retry...", reason);
+                        continue;
+                    }
+
+                    _logger.LogError(ex, "Non-retryable error or max retries exceeded");
+                    throw;
                 }
             }
 
+            iteration++;
+
+            // Check if response was cut off
+            var deltaContent = deltaContentBuilder.ToString();
+            if (RetryHelper.IsResponseIncomplete(finishReason, deltaContent))
+            {
+                _logger.LogWarning("Response appears incomplete (finishReason={FinishReason}), will continue...", finishReason);
+
+                if (onUpdate != null)
+                    await onUpdate(new AgentStreamUpdate(agent.Name, "\n⚠️ Response was truncated, continuing...\n", false));
+
+                // Add the partial response and ask model to continue
+                chatMessages.Add(new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = deltaContent
+                });
+                chatMessages.Add(new ChatMessage
+                {
+                    Role = "user",
+                    Content = "Your response was cut off. Please continue from where you left off."
+                });
+                continue;
+            }
+
             toolCalls = toolCallBuffers.Values.ToList();
+            output = outputBuilder.ToString();
 
             if (toolCalls.Count == 0)
             {
@@ -279,6 +356,8 @@ public class ChatService
                         assistantMessage.Content, assistantMessage.CreatedAt, cancellationToken);
                 }
 
+                _logger.LogInformation("Agent {AgentName} completed normally after {Iterations} iterations (no more tool calls)",
+                    agent.Name, iteration);
                 return new AgentRunResult(agent.Name, output);
             }
 
@@ -291,54 +370,26 @@ public class ChatService
 
             foreach (var toolCall in toolCalls)
             {
-                _logger.LogInformation("Tool call: {Tool} with args: {Args}",
-                    toolCall.Function.Name, toolCall.Function.Arguments);
-
-                // Only send status updates for non-read tools (read tools are rendered as grouped panels)
-                var shouldShowStatus = toolCall.Function.Name != "read";
-
-                if (shouldShowStatus && onUpdate != null)
-                    await onUpdate(new AgentStreamUpdate(agent.Name, $"\n⚡ {toolCall.Function.Name}", false));
-
                 _logger.LogInformation("Tool call: {Tool}\nArgs: {Args}",
                     toolCall.Function.Name, toolCall.Function.Arguments);
 
                 var result = await _tools.ExecuteAsync(toolCall.Function.Name, toolCall.Function.Arguments, context);
 
-                if (onToolExecution != null)
-                    await onToolExecution(new ToolExecutionUpdate(toolCall.Function.Name, result.Output, result.Success));
-
-                if (shouldShowStatus)
+                // Log result
+                if (result.Success)
                 {
-                    if (result.Success)
-                    {
-                        _logger.LogInformation("Tool {Tool} succeeded: {Output}",
-                            toolCall.Function.Name, result.Output.Truncate(500));
-                        if (onUpdate != null)
-                            await onUpdate(new AgentStreamUpdate(agent.Name, " ✓\n", false));
-                    }
-                    else
-                    {
-                        _logger.LogError("Tool {Tool} failed: {Output}",
-                            toolCall.Function.Name, result.Output);
-                        if (onUpdate != null)
-                            await onUpdate(new AgentStreamUpdate(agent.Name, $" ✗ {result.Output.Truncate(100)}\n", false));
-                    }
+                    _logger.LogInformation("Tool {Tool} succeeded: {Output}",
+                        toolCall.Function.Name, result.Output.Truncate(500));
                 }
                 else
                 {
-                    // Still log for non-status tools
-                    if (result.Success)
-                    {
-                        _logger.LogInformation("Tool {Tool} succeeded: {Output}",
-                            toolCall.Function.Name, result.Output.Truncate(500));
-                    }
-                    else
-                    {
-                        _logger.LogError("Tool {Tool} failed: {Output}",
-                            toolCall.Function.Name, result.Output);
-                    }
+                    _logger.LogError("Tool {Tool} failed: {Output}",
+                        toolCall.Function.Name, result.Output);
                 }
+
+                // Notify UI via single callback - onToolExecution handles all display
+                if (onToolExecution != null)
+                    await onToolExecution(new ToolExecutionUpdate(toolCall.Function.Name, toolCall.Function.Arguments, result.Output, result.Success));
 
                 // Truncate very long tool outputs to keep context manageable
                 var truncatedOutput = TruncateToolOutput(toolCall.Function.Name, result.Output);
@@ -364,6 +415,289 @@ public class ChatService
         }
 
         return new AgentRunResult(agent.Name, output);
+    }
+
+    /// <summary>
+    /// Runs a subagent with the full agentic loop in isolation.
+    /// Uses the Agent domain model with tool filtering.
+    /// </summary>
+    public async Task<SubagentResult> RunSubagentAsync(
+        SubagentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var agent = request.Agent;
+        var modelInfo = _providers.GetModelInfo(agent.ProviderId, agent.ModelId);
+        var maxTokens = modelInfo?.MaxTokens ?? 128000;
+
+        // Build initial messages
+        var chatMessages = new List<ChatMessage>
+        {
+            new() { Role = "system", Content = agent.SystemPrompt },
+            new() { Role = "user", Content = request.Prompt }
+        };
+
+        // Get filtered tools based on agent configuration
+        var toolDefinitions = _tools.GetFilteredToolDefinitions(agent.Tools);
+
+        var context = new ToolContext
+        {
+            WorkingDirectory = request.WorkingDirectory,
+            FileChangeTracker = null,
+            TodoTracker = null,
+            AskUserAsync = null,
+            GetDiagnosticsAsync = null
+        };
+
+        var outputBuilder = new System.Text.StringBuilder();
+        var maxIterations = Math.Min(request.MaxIterations, agent.MaxIterations);
+        var iteration = 0;
+        var tokenThreshold = (int)(maxTokens * 0.85);
+
+        _logger.LogInformation(
+            "Starting subagent {AgentName} (slug={Slug}) with maxIterations={MaxIterations}, tools={ToolCount}",
+            agent.Name, agent.Slug, maxIterations, toolDefinitions.Count);
+
+        try
+        {
+            while (iteration < maxIterations)
+            {
+                // Check token usage and compact if needed
+                var estimatedTokens = EstimateTokens(chatMessages);
+                if (estimatedTokens > tokenThreshold)
+                {
+                    _logger.LogInformation(
+                        "Subagent token usage ({Tokens}) exceeds threshold ({Threshold}), compacting",
+                        estimatedTokens, tokenThreshold);
+
+                    if (request.OnUpdate != null)
+                        await request.OnUpdate(new AgentStreamUpdate(agent.Name, "\n📦 Compacting context...\n", false));
+
+                    // Create a temporary AgentProfile for compaction
+                    var tempProfile = new AgentProfile
+                    {
+                        Name = agent.Name,
+                        SystemPrompt = agent.SystemPrompt,
+                        ProviderKey = agent.ProviderId,
+                        Model = agent.ModelId,
+                        MaxIterations = maxIterations
+                    };
+                    chatMessages = await CompactMessagesAsync(chatMessages, tempProfile, maxTokens, cancellationToken);
+                }
+
+                var chatRequest = new ChatCompletionRequest
+                {
+                    Model = agent.ModelId,
+                    Messages = chatMessages,
+                    Tools = toolDefinitions,
+                    Stream = true
+                };
+
+                var provider = _providers.Resolve(agent.ProviderId);
+                var deltaContentBuilder = new System.Text.StringBuilder();
+                var toolCalls = new List<ToolCall>();
+                var toolCallBuffers = new Dictionary<int, ToolCall>();
+                string? finishReason = null;
+
+                // Retry loop
+                var retryAttempt = 0;
+                var streamSucceeded = false;
+
+                while (!streamSucceeded && retryAttempt <= RetryHelper.MaxRetries)
+                {
+                    try
+                    {
+                        if (retryAttempt > 0)
+                        {
+                            var delay = RetryHelper.GetDelayMs(retryAttempt);
+                            _logger.LogWarning(
+                                "Subagent retrying (attempt {Attempt}/{Max}) after {Delay}ms...",
+                                retryAttempt, RetryHelper.MaxRetries, delay);
+
+                            if (request.OnUpdate != null)
+                                await request.OnUpdate(new AgentStreamUpdate(
+                                    agent.Name, $"\n⏳ Retrying ({retryAttempt}/{RetryHelper.MaxRetries})...\n", false));
+
+                            await Task.Delay(delay, cancellationToken);
+                            deltaContentBuilder.Clear();
+                            toolCallBuffers.Clear();
+                        }
+
+                        var stream = await provider.StreamChatAsync(chatRequest, cancellationToken);
+
+                        await foreach (var chunk in stream.WithCancellation(cancellationToken))
+                        {
+                            if (!string.IsNullOrEmpty(chunk.DeltaContent))
+                            {
+                                deltaContentBuilder.Append(chunk.DeltaContent);
+                                outputBuilder.Append(chunk.DeltaContent);
+
+                                if (request.OnUpdate != null)
+                                    await request.OnUpdate(new AgentStreamUpdate(
+                                        agent.Name, chunk.DeltaContent, false));
+                            }
+
+                            if (chunk.DeltaToolCalls != null)
+                            {
+                                foreach (var tc in chunk.DeltaToolCalls)
+                                {
+                                    if (!string.IsNullOrEmpty(tc.Id))
+                                    {
+                                        var idx = toolCallBuffers.Count;
+                                        toolCallBuffers[idx] = new ToolCall
+                                        {
+                                            Id = tc.Id,
+                                            Type = tc.Type,
+                                            Function = new ToolFunction
+                                            {
+                                                Name = tc.Function.Name,
+                                                Arguments = tc.Function.Arguments
+                                            }
+                                        };
+                                    }
+                                    else if (toolCallBuffers.Count > 0)
+                                    {
+                                        var lastIdx = toolCallBuffers.Count - 1;
+                                        toolCallBuffers[lastIdx].Function.Arguments += tc.Function.Arguments;
+                                    }
+                                }
+                            }
+
+                            if (!string.IsNullOrEmpty(chunk.FinishReason))
+                                finishReason = chunk.FinishReason;
+                        }
+
+                        streamSucceeded = true;
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        retryAttempt++;
+
+                        if (RetryHelper.IsRetryable(ex) && retryAttempt <= RetryHelper.MaxRetries)
+                        {
+                            _logger.LogWarning(ex, "Subagent retryable error: {Reason}", RetryHelper.GetRetryReason(ex));
+                            continue;
+                        }
+
+                        _logger.LogError(ex, "Subagent non-retryable error or max retries exceeded");
+                        throw;
+                    }
+                }
+
+                iteration++;
+
+                // Check for truncated response
+                var deltaContent = deltaContentBuilder.ToString();
+                if (RetryHelper.IsResponseIncomplete(finishReason, deltaContent))
+                {
+                    _logger.LogWarning("Subagent response truncated (finishReason={FinishReason})", finishReason);
+
+                    if (request.OnUpdate != null)
+                        await request.OnUpdate(new AgentStreamUpdate(
+                            agent.Name, "\n⚠️ Response truncated, continuing...\n", false));
+
+                    chatMessages.Add(new ChatMessage { Role = "assistant", Content = deltaContent });
+                    chatMessages.Add(new ChatMessage
+                    {
+                        Role = "user",
+                        Content = "Your response was cut off. Please continue from where you left off."
+                    });
+                    continue;
+                }
+
+                toolCalls = toolCallBuffers.Values.ToList();
+
+                // No tool calls means completion
+                if (toolCalls.Count == 0)
+                {
+                    if (request.OnUpdate != null)
+                        await request.OnUpdate(new AgentStreamUpdate(agent.Name, string.Empty, true));
+
+                    _logger.LogInformation(
+                        "Subagent {AgentName} completed after {Iterations} iterations",
+                        agent.Name, iteration);
+
+                    return new SubagentResult(
+                        Success: true,
+                        Output: outputBuilder.ToString(),
+                        IterationsUsed: iteration);
+                }
+
+                // Add assistant message with tool calls
+                chatMessages.Add(new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = deltaContent.Length > 0 ? deltaContent : null,
+                    ToolCalls = toolCalls
+                });
+
+                // Execute tool calls
+                foreach (var toolCall in toolCalls)
+                {
+                    _logger.LogInformation(
+                        "Subagent tool call: {Tool}\nArgs: {Args}",
+                        toolCall.Function.Name, toolCall.Function.Arguments);
+
+                    var result = await _tools.ExecuteAsync(toolCall.Function.Name, toolCall.Function.Arguments, context);
+
+                    if (result.Success)
+                    {
+                        _logger.LogInformation("Subagent tool {Tool} succeeded", toolCall.Function.Name);
+                    }
+                    else
+                    {
+                        _logger.LogError("Subagent tool {Tool} failed: {Output}", toolCall.Function.Name, result.Output);
+                    }
+
+                    if (request.OnToolExecution != null)
+                        await request.OnToolExecution(new ToolExecutionUpdate(
+                            toolCall.Function.Name, toolCall.Function.Arguments, result.Output, result.Success));
+
+                    var truncatedOutput = TruncateToolOutput(toolCall.Function.Name, result.Output);
+
+                    chatMessages.Add(new ChatMessage
+                    {
+                        Role = "tool",
+                        ToolCallId = toolCall.Id,
+                        Content = truncatedOutput
+                    });
+                }
+            }
+
+            // Reached max iterations
+            _logger.LogWarning(
+                "Subagent {AgentName} reached max iterations ({MaxIterations}) without completing",
+                agent.Name, maxIterations);
+
+            if (request.OnUpdate != null)
+            {
+                await request.OnUpdate(new AgentStreamUpdate(
+                    agent.Name, $"\n\n⚠️ Max iterations ({maxIterations}) reached.", false));
+                await request.OnUpdate(new AgentStreamUpdate(agent.Name, string.Empty, true));
+            }
+
+            return new SubagentResult(
+                Success: true,
+                Output: outputBuilder.ToString(),
+                IterationsUsed: iteration);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Subagent {AgentName} cancelled", agent.Name);
+            return new SubagentResult(
+                Success: false,
+                Output: outputBuilder.ToString(),
+                IterationsUsed: iteration,
+                Error: "Operation cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Subagent {AgentName} failed with error", agent.Name);
+            return new SubagentResult(
+                Success: false,
+                Output: outputBuilder.ToString(),
+                IterationsUsed: iteration,
+                Error: ex.Message);
+        }
     }
 
     private static string TruncateToolOutput(string toolName, string output)
@@ -417,60 +751,168 @@ public class ChatService
     }
 
     private async Task<List<ChatMessage>> CompactMessagesAsync(
-        List<ChatMessage> messages, 
-        AgentProfile agent, 
+        List<ChatMessage> messages,
+        AgentProfile agent,
         int maxTokens,
         CancellationToken cancellationToken)
     {
-        // Keep system message and last N messages, summarize the rest
         var systemMessage = messages.FirstOrDefault(m => m.Role == "system");
-        var targetTokens = maxTokens / 2; // Target 50% capacity after compaction
-        
-        // Start from end and work backwards, keeping messages until we hit target
-        var keptMessages = new List<ChatMessage>();
-        var tokensUsed = 0;
-        
-        for (var i = messages.Count - 1; i >= 0; i--)
+        var targetTokens = (int)(maxTokens * 0.5); // Target 50% capacity after compaction
+
+        // Phase 1: Prune old tool outputs (keep structure, reduce content)
+        var prunedMessages = PruneToolOutputs(messages, targetTokens);
+        var currentTokens = EstimateTokens(prunedMessages);
+
+        if (currentTokens <= targetTokens)
         {
-            var msg = messages[i];
-            if (msg.Role == "system") continue;
-            
-            var msgTokens = (msg.Content?.Length ?? 0) / 4;
-            if (msg.ToolCalls != null)
-            {
-                foreach (var tc in msg.ToolCalls)
-                    msgTokens += (tc.Function.Name.Length + tc.Function.Arguments.Length) / 4;
-            }
-            
-            if (tokensUsed + msgTokens > targetTokens && keptMessages.Count > 4)
-                break;
-                
-            keptMessages.Insert(0, msg);
-            tokensUsed += msgTokens;
+            _logger.LogInformation("Pruning sufficient: {Before} -> {After} tokens", EstimateTokens(messages), currentTokens);
+            return prunedMessages;
         }
-        
-        // Build summary of discarded messages
-        var discardedCount = messages.Count - keptMessages.Count - (systemMessage != null ? 1 : 0);
-        
+
+        // Phase 2: Generate summary of older messages using LLM
+        _logger.LogInformation("Pruning insufficient ({Tokens} > {Target}), generating summary...", currentTokens, targetTokens);
+
+        var recentMessages = new List<ChatMessage>();
+        var olderMessages = new List<ChatMessage>();
+        var recentTokens = 0;
+        var protectedTokens = (int)(targetTokens * 0.6); // Keep 60% of target for recent messages
+
+        // Keep recent messages
+        for (var i = prunedMessages.Count - 1; i >= 0; i--)
+        {
+            var msg = prunedMessages[i];
+            if (msg.Role == "system") continue;
+
+            var msgTokens = EstimateMessageTokens(msg);
+            if (recentTokens + msgTokens > protectedTokens && recentMessages.Count > 2)
+            {
+                olderMessages = prunedMessages.Skip(systemMessage != null ? 1 : 0).Take(i + 1).ToList();
+                break;
+            }
+
+            recentMessages.Insert(0, msg);
+            recentTokens += msgTokens;
+        }
+
+        // Generate summary if we have older messages to summarize
+        string? summary = null;
+        if (olderMessages.Count > 0)
+        {
+            summary = await GenerateSummaryAsync(olderMessages, agent, cancellationToken);
+        }
+
+        // Build result
         var result = new List<ChatMessage>();
         if (systemMessage != null)
             result.Add(systemMessage);
-            
-        if (discardedCount > 0)
+
+        if (!string.IsNullOrEmpty(summary))
         {
             result.Add(new ChatMessage
             {
                 Role = "system",
-                Content = $"[Context compacted: {discardedCount} earlier messages summarized to save tokens. Continue from recent context.]"
+                Content = $"[CONVERSATION SUMMARY - {olderMessages.Count} messages compacted]\n{summary}\n[END SUMMARY - Continue from recent context below]"
             });
         }
-        
-        result.AddRange(keptMessages);
-        
-        _logger.LogInformation("Compacted {Discarded} messages, keeping {Kept} messages (~{Tokens} tokens)",
-            discardedCount, keptMessages.Count, tokensUsed);
-        
+
+        result.AddRange(recentMessages);
+
+        _logger.LogInformation("Compacted {OlderCount} messages into summary, keeping {RecentCount} recent (~{Tokens} tokens)",
+            olderMessages.Count, recentMessages.Count, EstimateTokens(result));
+
         return result;
+    }
+
+    private List<ChatMessage> PruneToolOutputs(List<ChatMessage> messages, int targetTokens)
+    {
+        const int maxToolOutputLength = 2000; // Limit tool outputs to ~500 tokens
+        const int minMessagesToKeep = 10;
+
+        var result = new List<ChatMessage>();
+        var totalMessages = messages.Count;
+
+        for (var i = 0; i < totalMessages; i++)
+        {
+            var msg = messages[i];
+            var isRecent = i >= totalMessages - minMessagesToKeep;
+
+            if (msg.Role == "tool" && !isRecent && !string.IsNullOrEmpty(msg.Content) && msg.Content.Length > maxToolOutputLength)
+            {
+                // Prune old tool outputs
+                result.Add(new ChatMessage
+                {
+                    Role = msg.Role,
+                    ToolCallId = msg.ToolCallId,
+                    Content = msg.Content[..maxToolOutputLength] + "\n... [output truncated for context efficiency]"
+                });
+            }
+            else
+            {
+                result.Add(msg);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<string> GenerateSummaryAsync(List<ChatMessage> messages, AgentProfile agent, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var conversationText = new System.Text.StringBuilder();
+            foreach (var msg in messages.Take(50)) // Limit messages to summarize
+            {
+                var role = msg.Role.ToUpperInvariant();
+                var content = msg.Content?.Length > 500 ? msg.Content[..500] + "..." : msg.Content;
+                conversationText.AppendLine($"{role}: {content}");
+            }
+
+            var summaryPrompt = $@"Provide a concise summary of this conversation for context continuity. Focus on:
+- What tasks were requested and completed
+- Key files that were read, created, or modified
+- Important decisions or findings
+- Current state and what needs to be done next
+
+Conversation to summarize:
+{conversationText}
+
+Summary:";
+
+            var request = new ChatCompletionRequest
+            {
+                Model = agent.Model,
+                Messages = new List<ChatMessage>
+                {
+                    new() { Role = "system", Content = "You are a helpful assistant that creates concise conversation summaries. Be brief but include all important context." },
+                    new() { Role = "user", Content = summaryPrompt }
+                },
+                Stream = false
+            };
+
+            var provider = _providers.Resolve(agent.ProviderKey);
+            var response = await provider.ChatAsync(request, cancellationToken);
+
+            if (response?.Choices == null || response.Choices.Count == 0)
+                return "[Summary generation failed]";
+
+            return response.Choices[0].Message?.Content ?? "[Summary generation failed]";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to generate summary, using fallback");
+            return $"[{messages.Count} earlier messages - summary unavailable]";
+        }
+    }
+
+    private static int EstimateMessageTokens(ChatMessage msg)
+    {
+        var tokens = (msg.Content?.Length ?? 0) / 4;
+        if (msg.ToolCalls != null)
+        {
+            foreach (var tc in msg.ToolCalls)
+                tokens += (tc.Function.Name.Length + tc.Function.Arguments.Length) / 4;
+        }
+        return tokens;
     }
 
     private static List<ChatMessage> BuildMessagesFromHistory(AgentProfile agent, string userInput, List<HistoryEntry> history, string? priorOutput)
@@ -541,7 +983,25 @@ public record AgentRunResult(string AgentName, string Output);
 
 public record AgentStreamUpdate(string AgentName, string Delta, bool IsDone);
 
-public record ToolExecutionUpdate(string ToolName, string Output, bool Success);
+public record ToolExecutionUpdate(string ToolName, string Input, string Output, bool Success);
+
+/// <summary>
+/// Request for running a subagent in isolation.
+/// </summary>
+public class SubagentRequest
+{
+    public required Agent Agent { get; init; }
+    public required string Prompt { get; init; }
+    public required string WorkingDirectory { get; init; }
+    public int MaxIterations { get; init; } = 10;
+    public Func<AgentStreamUpdate, Task>? OnUpdate { get; init; }
+    public Func<ToolExecutionUpdate, Task>? OnToolExecution { get; init; }
+}
+
+/// <summary>
+/// Result from a subagent execution.
+/// </summary>
+public record SubagentResult(bool Success, string Output, int IterationsUsed, string? Error = null);
 
 internal static class StringExtensions
 {

@@ -1,0 +1,38 @@
+{
+  "name": "search_and_explain",
+  "description": "Search for a pattern in the codebase, then have an agent explain the findings",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "searchPattern": {
+        "type": "string",
+        "description": "Regex pattern to search for in code"
+      },
+      "filePattern": {
+        "type": "string",
+        "description": "Optional glob pattern to filter files (e.g., '*.cs')"
+      },
+      "question": {
+        "type": "string",
+        "description": "What you want to understand about the search results"
+      }
+    },
+    "required": ["searchPattern", "question"]
+  },
+  "pipeline": [
+    {
+      "type": "tool",
+      "tool": "grep",
+      "name": "Search Code",
+      "arguments": "{\"pattern\": \"{{searchPattern}}\", \"include\": \"{{filePattern}}\"}",
+      "handoff": "none"
+    },
+    {
+      "type": "agent",
+      "agent": "general",
+      "name": "Explain",
+      "prompt": "Based on these search results:\n\n{{_lastOutput}}\n\nAnswer this question: {{question}}\n\nProvide a clear, detailed explanation with code references.",
+      "handoff": "none"
+    }
+  ]
+}

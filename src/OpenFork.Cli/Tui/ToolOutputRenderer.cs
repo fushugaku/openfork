@@ -1,60 +1,140 @@
+using System.Text;
 using System.Text.RegularExpressions;
-using Spectre.Console;
-using Spectre.Console.Rendering;
 
 namespace OpenFork.Cli.Tui;
 
+/// <summary>
+/// Renders tool execution output with formatting and syntax indicators.
+/// </summary>
 public static class ToolOutputRenderer
 {
-    public static IRenderable Render(string toolName, string output, bool success)
+    private const int BoxWidth = 50;
+
+    /// <summary>
+    /// Renders tool output to formatted text with status indicators.
+    /// </summary>
+    public static string RenderToText(string toolName, string output, bool success)
     {
         if (!success)
         {
-            return new Panel(new Markup($"[{Theme.Error.ToMarkup()}]{Markup.Escape(output)}[/]"))
-                .Header($"[{Theme.Error.ToMarkup()}]⚠️ {toolName} - Error[/]")
-                .Border(BoxBorder.Rounded)
-                .BorderColor(Theme.Error);
+            return FormatToolOutput(Icons.Cross, toolName, output, OutputType.Error);
         }
 
-        return toolName switch
+        return toolName.ToLowerInvariant() switch
         {
             "read" => RenderReadFile(output),
-            "edit" => RenderEditFile(output),
-            "multiedit" => RenderMultiEdit(output),
-            "write" => RenderWriteFile(output),
+            "edit" => FormatToolOutput(Icons.Write, "edit", output, OutputType.Diff),
+            "multiedit" => FormatToolOutput(Icons.Write, "multiedit", output, OutputType.Diff),
+            "write" => FormatToolOutput(Icons.Write, "write", output, OutputType.Success),
             "bash" => RenderBashOutput(output),
             "glob" => RenderGlobOutput(output),
             "grep" => RenderGrepOutput(output),
-            "list" => RenderListOutput(output),
+            "list" => FormatToolOutput(Icons.Folder, "list", output, OutputType.Files),
             "webfetch" => RenderWebFetch(output),
-            "websearch" => RenderWebSearch(output),
+            "websearch" => FormatToolOutput(Icons.Web, "websearch", output, OutputType.Info),
             "codesearch" => RenderCodeSearch(output),
             "diagnostics" => RenderDiagnostics(output),
-            "lsp" => RenderLspOutput(output),
-            "question" => RenderQuestion(output),
-            "todowrite" => RenderTodoWrite(output),
-            "todoread" => RenderTodoRead(output),
-            "search_project" => RenderSearchProject(output),
-            _ => RenderDefault(toolName, output)
+            "lsp" => FormatToolOutput(Icons.Tool, "lsp", output, OutputType.Info),
+            "question" => FormatToolOutput(Icons.Info, "question", output, OutputType.Info),
+            "todowrite" => FormatToolOutput(Icons.Check, "todowrite", output, OutputType.Success),
+            "todoread" => FormatToolOutput(Icons.Pending, "todoread", output, OutputType.Info),
+            "search_project" => FormatToolOutput(Icons.Search, "search_project", output, OutputType.Info),
+            "task" => RenderTaskOutput(output, success),
+            _ => FormatToolOutput(Icons.Tool, toolName, output, OutputType.Info)
         };
     }
 
-    public static IRenderable RenderGroupedReads(List<string> filePaths)
+    /// <summary>
+    /// Renders grouped file reads with compact formatting.
+    /// </summary>
+    public static string RenderGroupedReads(List<string> filePaths)
     {
-        var fileList = string.Join(", ", filePaths.Select(Path.GetFileName));
-        
-        return new Panel(new Markup($"[{Theme.Success.ToMarkup()}]{Markup.Escape(fileList)}[/]"))
-            .Header($"[{Theme.Primary.ToMarkup()}]📄 read[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        var sb = new StringBuilder();
+        var header = $" {Icons.Read} read ({filePaths.Count} files) ";
+        sb.AppendLine(CreateBoxTop(header));
+        foreach (var path in filePaths.Take(10))
+        {
+            sb.AppendLine(CreateBoxLine($"{Icons.File} {Path.GetFileName(path)}"));
+        }
+        if (filePaths.Count > 10)
+            sb.AppendLine(CreateBoxLine($"   ... +{filePaths.Count - 10} more files"));
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderReadFile(string output)
+    private static string CreateBoxTop(string title)
+    {
+        var padding = BoxWidth - title.Length - 2;
+        var rightPad = Math.Max(1, padding);
+        return $"{Icons.BoxTopLeft}{Icons.BoxHorizontal}{title}{new string(Icons.BoxHorizontal[0], rightPad)}{Icons.BoxTopRight}";
+    }
+
+    private static string CreateBoxLine(string content)
+    {
+        var trimmed = content.Length > BoxWidth - 4 ? content[..(BoxWidth - 7)] + "..." : content;
+        return $"{Icons.BoxVertical} {trimmed.PadRight(BoxWidth - 4)} {Icons.BoxVertical}";
+    }
+
+    private static string CreateBoxBottom()
+    {
+        return $"{Icons.BoxBottomLeft}{new string(Icons.BoxHorizontal[0], BoxWidth - 2)}{Icons.BoxBottomRight}";
+    }
+
+    private enum OutputType
+    {
+        Info,
+        Success,
+        Error,
+        Warning,
+        Diff,
+        Code,
+        Files
+    }
+
+    private static string FormatToolOutput(string icon, string toolName, string output, OutputType type)
+    {
+        var sb = new StringBuilder();
+        var statusIcon = type switch
+        {
+            OutputType.Success => Icons.Check,
+            OutputType.Error => Icons.Cross,
+            OutputType.Warning => Icons.Warning,
+            _ => ""
+        };
+
+        var header = $" {icon} {toolName} {statusIcon}".Trim();
+        sb.AppendLine(CreateBoxTop(header));
+
+        // Format the output based on type
+        var formattedOutput = type switch
+        {
+            OutputType.Diff => FormatDiffOutput(output),
+            OutputType.Code => FormatCodeOutput(output),
+            OutputType.Files => FormatFilesOutput(output),
+            OutputType.Error => FormatErrorOutput(output),
+            _ => FormatStandardOutput(output)
+        };
+
+        var lines = formattedOutput.Split('\n').Take(Layout.MaxToolOutputLines).ToArray();
+        foreach (var line in lines)
+        {
+            sb.AppendLine(CreateBoxLine(line));
+        }
+
+        var lineCount = formattedOutput.Split('\n').Length;
+        if (lineCount > Layout.MaxToolOutputLines)
+            sb.AppendLine(CreateBoxLine($"... ({lineCount - Layout.MaxToolOutputLines} more lines)"));
+
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
+    }
+
+    private static string RenderReadFile(string output)
     {
         var lines = output.Split('\n');
-        
-        // Extract file path from <file path="..."> tag
         var filePath = "File Content";
+
+        // Extract file path from XML-style header
         if (lines.Length > 0)
         {
             var pathMatch = Regex.Match(lines[0], @"<file path=""(.+?)"">");
@@ -63,401 +143,477 @@ public static class ToolOutputRenderer
                 filePath = pathMatch.Groups[1].Value;
             }
         }
-        
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Theme.Secondary)
-            .AddColumn(new TableColumn("[dim]Line[/]").RightAligned())
-            .AddColumn(new TableColumn("Content"));
 
-        var maxLines = 50;
-        var displayLines = lines.Take(maxLines).ToList();
-        
-        foreach (var line in displayLines)
+        var sb = new StringBuilder();
+        var fileName = Path.GetFileName(filePath);
+        sb.AppendLine(CreateBoxTop($" {Icons.Read} {fileName} "));
+        sb.AppendLine(CreateBoxLine($"📍 {filePath}"));
+        sb.AppendLine(CreateBoxLine(new string('─', BoxWidth - 6)));
+
+        // Detect language and format code
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+        var contentLines = lines.Skip(1).Take(Layout.MaxCodeBlockLines).ToArray();
+
+        foreach (var line in contentLines)
         {
-            var match = Regex.Match(line, @"^\s*(\d+)\|(.*)$");
-            if (match.Success)
-            {
-                var lineNum = match.Groups[1].Value.Trim();
-                var content = match.Groups[2].Value;
-                table.AddRow($"[dim]{lineNum}[/]", Markup.Escape(content));
-            }
-            else
-            {
-                table.AddRow("", Markup.Escape(line));
-            }
+            var formattedLine = FormatCodeLine(line, extension);
+            sb.AppendLine(CreateBoxLine(formattedLine));
         }
 
-        if (lines.Length > maxLines)
-        {
-            table.AddRow("[dim]...[/]", $"[dim]({lines.Length - maxLines} more lines)[/]");
-        }
+        if (lines.Length > Layout.MaxCodeBlockLines + 1)
+            sb.AppendLine(CreateBoxLine($"... ({lines.Length - Layout.MaxCodeBlockLines - 1} more lines)"));
 
-        return new Panel(table)
-            .Header($"[{Theme.Primary.ToMarkup()}]📄 {Markup.Escape(filePath)}[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderEditFile(string output)
+    private static string RenderBashOutput(string output)
     {
-        return new Panel(new Markup($"[{Theme.Success.ToMarkup()}]{Markup.Escape(output)}[/]"))
-            .Header($"[{Theme.Success.ToMarkup()}]✏️ File Edited[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Success);
-    }
+        var sb = new StringBuilder();
+        sb.AppendLine(CreateBoxTop($" {Icons.Bash} bash "));
 
-    private static IRenderable RenderMultiEdit(string output)
-    {
         var lines = output.Split('\n');
-        var table = new Table()
-            .Border(TableBorder.None)
-            .HideHeaders()
-            .AddColumn("");
-
-        foreach (var line in lines)
+        foreach (var line in lines.Take(100))
         {
-            if (line.Contains("→"))
-            {
-                table.AddRow($"[{Theme.Accent.ToMarkup()}]✓[/] {Markup.Escape(line)}");
-            }
-            else
-            {
-                table.AddRow(Markup.Escape(line));
-            }
+            // Highlight error patterns
+            var formattedLine = line;
+            if (IsErrorLine(line))
+                formattedLine = $"❌ {line}";
+            else if (IsWarningLine(line))
+                formattedLine = $"⚠️ {line}";
+
+            sb.AppendLine(CreateBoxLine(formattedLine));
         }
 
-        return new Panel(table)
-            .Header($"[{Theme.Success.ToMarkup()}]✏️ Multiple Edits Applied[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Success);
+        if (lines.Length > 100)
+            sb.AppendLine(CreateBoxLine($"... ({lines.Length - 100} more lines)"));
+
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderWriteFile(string output)
-    {
-        return new Panel(new Markup($"[{Theme.Success.ToMarkup()}]{Markup.Escape(output)}[/]"))
-            .Header($"[{Theme.Success.ToMarkup()}]💾 File Written[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Success);
-    }
-
-    private static IRenderable RenderBashOutput(string output)
-    {
-        var maxLines = 100;
-        var lines = output.Split('\n');
-        var displayLines = lines.Take(maxLines).ToList();
-        
-        var content = string.Join('\n', displayLines.Select(Markup.Escape));
-        if (lines.Length > maxLines)
-        {
-            content += $"\n[dim]... ({lines.Length - maxLines} more lines)[/]";
-        }
-
-        return new Panel(new Markup(content))
-            .Header($"[{Theme.Accent.ToMarkup()}]⚡ Command Output[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Accent);
-    }
-
-    private static IRenderable RenderGlobOutput(string output)
+    private static string RenderGlobOutput(string output)
     {
         var files = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        var tree = new Tree($"[{Theme.Primary.ToMarkup()}]📂 Matched Files ({files.Length})[/]");
+        var sb = new StringBuilder();
+        sb.AppendLine(CreateBoxTop($" {Icons.Search} glob ({files.Length} matches) "));
 
-        var grouped = files.GroupBy(f => Path.GetDirectoryName(f) ?? "");
-        foreach (var group in grouped.Take(20))
+        foreach (var file in files.Take(20))
         {
-            var dirNode = tree.AddNode($"[{Theme.Secondary.ToMarkup()}]{Markup.Escape(group.Key ?? ".")}[/]");
-            foreach (var file in group.Take(50))
-            {
-                dirNode.AddNode($"[{Theme.Muted.ToMarkup()}]{Markup.Escape(Path.GetFileName(file))}[/]");
-            }
+            var icon = GetFileIcon(file);
+            sb.AppendLine(CreateBoxLine($"{icon} {Path.GetFileName(file)}"));
         }
 
-        return new Panel(tree)
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        if (files.Length > 20)
+            sb.AppendLine(CreateBoxLine($"   ... +{files.Length - 20} more files"));
+
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderGrepOutput(string output)
+    private static string RenderGrepOutput(string output)
     {
         var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Theme.Secondary)
-            .AddColumn(new TableColumn("File:Line"))
-            .AddColumn(new TableColumn("Match"));
+        var sb = new StringBuilder();
+        sb.AppendLine(CreateBoxTop($" {Icons.Search} grep ({lines.Length} results) "));
 
         foreach (var line in lines.Take(50))
         {
-            var match = Regex.Match(line, @"^(.+?):(\d+):(.+)$");
+            // Format grep output: file:line:content
+            var match = Regex.Match(line, @"^(.+?):(\d+):(.*)$");
             if (match.Success)
             {
                 var file = Path.GetFileName(match.Groups[1].Value);
                 var lineNum = match.Groups[2].Value;
-                var content = match.Groups[3].Value;
-                table.AddRow(
-                    $"[{Theme.Accent.ToMarkup()}]{Markup.Escape(file)}:{lineNum}[/]",
-                    Markup.Escape(content.Trim())
-                );
+                var content = match.Groups[3].Value.Trim();
+                if (content.Length > 35) content = content[..35] + "...";
+                sb.AppendLine(CreateBoxLine($"📍 {file}:{lineNum} {content}"));
             }
             else
             {
-                table.AddRow("", Markup.Escape(line));
+                sb.AppendLine(CreateBoxLine(line));
             }
         }
 
         if (lines.Length > 50)
-        {
-            table.AddRow("[dim]...[/]", $"[dim]({lines.Length - 50} more matches)[/]");
-        }
+            sb.AppendLine(CreateBoxLine($"   ... +{lines.Length - 50} more matches"));
 
-        return new Panel(table)
-            .Header($"[{Theme.Primary.ToMarkup()}]🔍 Search Results ({lines.Length})[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderListOutput(string output)
+    private static string RenderWebFetch(string output)
     {
-        var tree = new Tree($"[{Theme.Primary.ToMarkup()}]📁 Directory Structure[/]");
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        
-        var currentPath = new Stack<TreeNode>();
-        currentPath.Push(tree.AddNode(""));
+        var sb = new StringBuilder();
+        sb.AppendLine(CreateBoxTop($" {Icons.Web} webfetch "));
 
-        foreach (var line in lines.Take(200))
-        {
-            var indent = line.TakeWhile(c => c == ' ').Count();
-            var content = line.Trim();
-            
-            if (string.IsNullOrWhiteSpace(content)) continue;
-
-            var isDir = content.EndsWith('/') || !content.Contains('.');
-            var icon = isDir ? "📁" : "📄";
-            var color = isDir ? Theme.Secondary.ToMarkup() : Theme.Muted.ToMarkup();
-
-            var node = currentPath.Peek().AddNode($"[{color}]{icon} {Markup.Escape(content)}[/]");
-            
-            if (isDir && indent < 100)
-            {
-                while (currentPath.Count > indent / 2 + 1)
-                    currentPath.Pop();
-                currentPath.Push(node);
-            }
-        }
-
-        return new Panel(tree)
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
-    }
-
-    private static IRenderable RenderWebFetch(string output)
-    {
+        // Truncate content
         var maxLength = 2000;
-        var displayOutput = output.Length > maxLength 
-            ? output[..maxLength] + $"\n\n[dim]... (truncated {output.Length - maxLength} characters)[/]"
+        var displayOutput = output.Length > maxLength
+            ? output[..maxLength]
             : output;
 
-        return new Panel(new Markup(Markup.Escape(displayOutput)))
-            .Header($"[{Theme.Primary.ToMarkup()}]🌐 Web Content[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
-    }
-
-    private static IRenderable RenderWebSearch(string output)
-    {
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Theme.Secondary)
-            .AddColumn(new TableColumn("#").Width(3))
-            .AddColumn(new TableColumn("Result"));
-
-        var items = output.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-        var index = 1;
-
-        foreach (var item in items.Take(10))
+        foreach (var line in displayOutput.Split('\n').Take(50))
         {
-            var lines = item.Split('\n', 3);
-            var title = lines.Length > 0 ? lines[0].Replace("**", "").Trim() : "";
-            var url = lines.Length > 1 ? lines[1] : "";
-            var snippet = lines.Length > 2 ? lines[2] : "";
-
-            var content = $"[{Theme.Accent.ToMarkup()}]{Markup.Escape(title)}[/]\n" +
-                         $"[{Theme.Muted.ToMarkup()}]{Markup.Escape(url)}[/]\n" +
-                         $"{Markup.Escape(snippet.Length > 150 ? snippet[..150] + "..." : snippet)}";
-
-            table.AddRow($"[dim]{index}[/]", content);
-            index++;
+            sb.AppendLine(CreateBoxLine(line));
         }
 
-        return new Panel(table)
-            .Header($"[{Theme.Primary.ToMarkup()}]🔍 Web Search Results[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        if (output.Length > maxLength)
+            sb.AppendLine(CreateBoxLine($"... (truncated {output.Length - maxLength} chars)"));
+
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderCodeSearch(string output)
+    private static string RenderCodeSearch(string output)
     {
-        return new Panel(new Markup(Markup.Escape(output.Length > 3000 ? output[..3000] + "\n\n[dim]...(truncated)[/]" : output)))
-            .Header($"[{Theme.Primary.ToMarkup()}]💻 Code Documentation[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
-    }
+        var sb = new StringBuilder();
+        sb.AppendLine(CreateBoxTop($" {Icons.Code} codesearch "));
 
-    private static IRenderable RenderDiagnostics(string output)
-    {
-        if (output.Contains("No diagnostics found"))
+        var maxLength = 3000;
+        var displayOutput = output.Length > maxLength
+            ? output[..maxLength]
+            : output;
+
+        foreach (var line in displayOutput.Split('\n').Take(Layout.MaxCodeBlockLines))
         {
-            return new Panel(new Markup($"[{Theme.Success.ToMarkup()}]✓ {Markup.Escape(output)}[/]"))
-                .Header($"[{Theme.Success.ToMarkup()}]🔍 Diagnostics[/]")
-                .Border(BoxBorder.Rounded)
-                .BorderColor(Theme.Success);
+            sb.AppendLine(CreateBoxLine(line));
         }
 
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Theme.Warning)
-            .AddColumn(new TableColumn("File:Line"))
-            .AddColumn(new TableColumn("Issue"));
+        if (output.Length > maxLength)
+            sb.AppendLine(CreateBoxLine("... (truncated)"));
 
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var line in lines)
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
+    }
+
+    private static string RenderDiagnostics(string output)
+    {
+        var sb = new StringBuilder();
+        var hasErrors = output.Contains("error", StringComparison.OrdinalIgnoreCase);
+        var icon = hasErrors ? Icons.Cross : Icons.Check;
+
+        sb.AppendLine(CreateBoxTop($" {icon} diagnostics "));
+
+        foreach (var line in output.Split('\n').Take(50))
         {
-            if (line.Contains("❌"))
+            var formattedLine = line;
+            if (line.Contains("error", StringComparison.OrdinalIgnoreCase))
+                formattedLine = $"❌ {line}";
+            else if (line.Contains("warning", StringComparison.OrdinalIgnoreCase))
+                formattedLine = $"⚠️ {line}";
+
+            sb.AppendLine(CreateBoxLine(formattedLine));
+        }
+
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Renders task tool (subagent) output with distinctive formatting.
+    /// </summary>
+    private static string RenderTaskOutput(string output, bool success)
+    {
+        var sb = new StringBuilder();
+
+        // Check if it's a background launch or completed execution
+        var isBackground = output.Contains("launched in background", StringComparison.OrdinalIgnoreCase);
+        var isCompleted = output.Contains("## Subagent Result", StringComparison.OrdinalIgnoreCase);
+
+        string headerIcon;
+        string headerText;
+
+        if (!success)
+        {
+            headerIcon = Icons.Cross;
+            headerText = "subagent failed";
+        }
+        else if (isBackground)
+        {
+            headerIcon = "🚀";
+            headerText = "subagent launched";
+        }
+        else if (isCompleted)
+        {
+            headerIcon = "🤖✓";
+            headerText = "subagent completed";
+        }
+        else
+        {
+            headerIcon = "🤖";
+            headerText = "subagent";
+        }
+
+        sb.AppendLine(CreateBoxTop($" {headerIcon} {headerText} "));
+
+        // Parse subagent type and description from output
+        var lines = output.Split('\n');
+        var agentType = ExtractValue(lines, "Type:");
+        var description = ExtractValue(lines, "Description:") ?? ExtractValue(lines, "Task:");
+        var agentId = ExtractValue(lines, "ID:");
+
+        if (!string.IsNullOrEmpty(agentType))
+        {
+            var agentIcon = GetSubagentIcon(agentType);
+            sb.AppendLine(CreateBoxLine($"{agentIcon} Agent: {agentType}"));
+        }
+
+        if (!string.IsNullOrEmpty(description))
+        {
+            sb.AppendLine(CreateBoxLine($"📋 Task: {description}"));
+        }
+
+        if (isBackground && !string.IsNullOrEmpty(agentId))
+        {
+            sb.AppendLine(CreateBoxLine($"🔗 ID: {TruncateString(agentId, 35)}"));
+            sb.AppendLine(CreateBoxLine("⏳ Running in background..."));
+        }
+        else if (isCompleted)
+        {
+            // Extract and show result preview
+            var resultStart = output.IndexOf("**Result:**", StringComparison.OrdinalIgnoreCase);
+            if (resultStart >= 0)
             {
-                var parts = line.Split(": ", 2);
-                if (parts.Length == 2)
+                var resultContent = output[(resultStart + 11)..].Trim();
+                var resultLines = resultContent.Split('\n').Take(5).ToArray();
+                sb.AppendLine(CreateBoxLine("─── Result ───"));
+                foreach (var line in resultLines)
                 {
-                    table.AddRow(
-                        $"[{Theme.Error.ToMarkup()}]{Markup.Escape(parts[0])}[/]",
-                        Markup.Escape(parts[1])
-                    );
+                    sb.AppendLine(CreateBoxLine(line));
+                }
+                if (resultContent.Split('\n').Length > 5)
+                {
+                    sb.AppendLine(CreateBoxLine("...(truncated)"));
                 }
             }
-            else if (line.Contains("⚠️"))
+        }
+        else if (!success)
+        {
+            // Show error message
+            sb.AppendLine(CreateBoxLine($"❌ {output}"));
+        }
+        else
+        {
+            // Generic output
+            foreach (var line in lines.Take(8))
             {
-                var parts = line.Split(": ", 2);
-                if (parts.Length == 2)
-                {
-                    table.AddRow(
-                        $"[{Theme.Warning.ToMarkup()}]{Markup.Escape(parts[0])}[/]",
-                        Markup.Escape(parts[1])
-                    );
-                }
+                sb.AppendLine(CreateBoxLine(line));
             }
-            else if (!line.StartsWith("Found") && !line.StartsWith("📄"))
+            if (lines.Length > 8)
             {
-                table.AddRow("", Markup.Escape(line));
+                sb.AppendLine(CreateBoxLine("...(more)"));
             }
         }
 
-        return new Panel(table)
-            .Header($"[{Theme.Warning.ToMarkup()}]🔍 Diagnostics[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Warning);
+        sb.AppendLine(CreateBoxBottom());
+        return sb.ToString();
     }
 
-    private static IRenderable RenderLspOutput(string output)
+    /// <summary>
+    /// Gets an icon for a specific subagent type.
+    /// </summary>
+    private static string GetSubagentIcon(string agentType)
     {
-        return new Panel(new Markup(Markup.Escape(output)))
-            .Header($"[{Theme.Primary.ToMarkup()}]🔧 LSP Results[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        return agentType.ToLowerInvariant() switch
+        {
+            "explore" or "explorer" => "🔭",
+            "researcher" or "research" => "📚",
+            "planner" or "planner-sub" => "📝",
+            "general" => "🤖",
+            "coder" => "💻",
+            "tester" => "🧪",
+            "reviewer" => "👀",
+            _ => "🤖"
+        };
     }
 
-    private static IRenderable RenderQuestion(string output)
+    /// <summary>
+    /// Extracts a value from lines matching "Key: Value" pattern.
+    /// </summary>
+    private static string? ExtractValue(string[] lines, string key)
     {
-        return new Panel(new Markup($"[{Theme.Success.ToMarkup()}]{Markup.Escape(output)}[/]"))
-            .Header($"[{Theme.Accent.ToMarkup()}]❓ User Response[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Accent);
-    }
-
-    private static IRenderable RenderTodoWrite(string output)
-    {
-        return new Panel(new Markup($"[{Theme.Success.ToMarkup()}]{Markup.Escape(output)}[/]"))
-            .Header($"[{Theme.Success.ToMarkup()}]✓ Tasks Updated[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Success);
-    }
-
-    private static IRenderable RenderTodoRead(string output)
-    {
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Theme.Secondary)
-            .AddColumn(new TableColumn("Status").Width(12))
-            .AddColumn(new TableColumn("Task"));
-
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         foreach (var line in lines)
         {
-            if (line.Contains("[completed]"))
+            var trimmed = line.Trim().TrimStart('-', '*', ' ');
+            if (trimmed.StartsWith(key, StringComparison.OrdinalIgnoreCase))
             {
-                var task = line.Replace("[completed]", "").Trim();
-                table.AddRow($"[{Theme.Success.ToMarkup()}]✓ Done[/]", Markup.Escape(task));
-            }
-            else if (line.Contains("[in_progress]"))
-            {
-                var task = line.Replace("[in_progress]", "").Trim();
-                table.AddRow($"[{Theme.Warning.ToMarkup()}]→ Active[/]", Markup.Escape(task));
-            }
-            else if (line.Contains("[pending]"))
-            {
-                var task = line.Replace("[pending]", "").Trim();
-                table.AddRow($"[{Theme.Muted.ToMarkup()}]○ Pending[/]", Markup.Escape(task));
-            }
-            else if (!string.IsNullOrWhiteSpace(line))
-            {
-                table.AddRow("", Markup.Escape(line));
+                return trimmed[key.Length..].Trim();
             }
         }
-
-        return new Panel(table)
-            .Header($"[{Theme.Primary.ToMarkup()}]📋 Tasks[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        return null;
     }
 
-    private static IRenderable RenderSearchProject(string output)
+    /// <summary>
+    /// Truncates a string to specified length with ellipsis.
+    /// </summary>
+    private static string TruncateString(string text, int maxLength)
     {
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Theme.Secondary)
-            .AddColumn(new TableColumn("File"))
-            .AddColumn(new TableColumn("Relevance"))
-            .AddColumn(new TableColumn("Preview"));
+        if (string.IsNullOrEmpty(text)) return "";
+        return text.Length > maxLength ? text[..maxLength] + "..." : text;
+    }
 
-        var entries = output.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-        foreach (var entry in entries.Take(15))
+    // Formatting helpers
+
+    private static string FormatDiffOutput(string output)
+    {
+        var sb = new StringBuilder();
+        foreach (var line in output.Split('\n'))
         {
-            var lines = entry.Split('\n');
-            if (lines.Length >= 2)
+            if (line.StartsWith('+') && !line.StartsWith("+++"))
+                sb.AppendLine($"[+] {line}");
+            else if (line.StartsWith('-') && !line.StartsWith("---"))
+                sb.AppendLine($"[-] {line}");
+            else if (line.StartsWith("@@"))
+                sb.AppendLine($"[@] {line}");
+            else
+                sb.AppendLine(line);
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string FormatCodeOutput(string output)
+    {
+        // Detect code blocks and format
+        var sb = new StringBuilder();
+        var inCodeBlock = false;
+        var codeLanguage = "";
+
+        foreach (var line in output.Split('\n'))
+        {
+            if (line.StartsWith("```"))
             {
-                var file = lines[0].Replace("File:", "").Trim();
-                var score = lines.FirstOrDefault(l => l.Contains("Score:"))?.Replace("Score:", "").Trim() ?? "";
-                var preview = lines.Length > 2 ? string.Join(" ", lines.Skip(2)).Trim() : "";
-                
-                table.AddRow(
-                    $"[{Theme.Accent.ToMarkup()}]{Markup.Escape(Path.GetFileName(file))}[/]\n[dim]{Markup.Escape(Path.GetDirectoryName(file) ?? "")}[/]",
-                    $"[{Theme.Success.ToMarkup()}]{Markup.Escape(score)}[/]",
-                    Markup.Escape(preview.Length > 100 ? preview[..100] + "..." : preview)
-                );
+                if (!inCodeBlock)
+                {
+                    codeLanguage = line.Length > 3 ? line[3..].Trim() : "";
+                    sb.AppendLine($"─── {codeLanguage} ───");
+                    inCodeBlock = true;
+                }
+                else
+                {
+                    sb.AppendLine("───────────");
+                    inCodeBlock = false;
+                }
+            }
+            else
+            {
+                sb.AppendLine(line);
             }
         }
 
-        return new Panel(table)
-            .Header($"[{Theme.Primary.ToMarkup()}]🔍 Semantic Search Results[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Primary);
+        return sb.ToString().TrimEnd();
     }
 
-    private static IRenderable RenderDefault(string toolName, string output)
+    private static string FormatFilesOutput(string output)
     {
-        return new Panel(new Markup(Markup.Escape(output)))
-            .Header($"[{Theme.Primary.ToMarkup()}]🔧 {toolName}[/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Theme.Secondary);
+        var sb = new StringBuilder();
+        foreach (var line in output.Split('\n'))
+        {
+            var icon = GetFileIcon(line);
+            sb.AppendLine($"{icon} {line}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string FormatErrorOutput(string output)
+    {
+        var sb = new StringBuilder();
+        foreach (var line in output.Split('\n'))
+        {
+            sb.AppendLine($"  {line}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string FormatStandardOutput(string output)
+    {
+        return output;
+    }
+
+    private static string FormatCodeLine(string line, string extension)
+    {
+        // Basic line number extraction if present
+        var match = Regex.Match(line, @"^\s*(\d+)[:\|→]\s*(.*)$");
+        if (match.Success)
+        {
+            var lineNum = match.Groups[1].Value.PadLeft(4);
+            var content = match.Groups[2].Value;
+            return $"{lineNum}│ {content}";
+        }
+        return line;
+    }
+
+    private static string GetFileIcon(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext switch
+        {
+            ".cs" or ".csx" => "🟣",          // C#
+            ".js" or ".jsx" => "🟡",           // JavaScript
+            ".ts" or ".tsx" => "🔵",           // TypeScript
+            ".py" => "🐍",                      // Python
+            ".rs" => "🦀",                      // Rust
+            ".go" => "🔷",                      // Go
+            ".java" or ".kt" => "☕",           // Java/Kotlin
+            ".json" => "📋",                    // JSON
+            ".xml" or ".html" or ".htm" => "🌐", // Markup
+            ".md" or ".txt" => "📝",            // Text/Markdown
+            ".css" or ".scss" or ".sass" => "🎨", // Styles
+            ".yaml" or ".yml" => "⚙️",          // Config
+            ".sql" => "🗃️",                     // SQL
+            ".sh" or ".bash" or ".zsh" => "💻", // Shell
+            ".dockerfile" or "" when path.Contains("Dockerfile") => "🐳", // Docker
+            ".gitignore" or ".gitattributes" => "📦", // Git
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".svg" => "🖼️", // Images
+            _ when Directory.Exists(path) => "📁",
+            _ => "📄"
+        };
+    }
+
+    private static bool IsErrorLine(string line)
+    {
+        var lower = line.ToLowerInvariant();
+        return lower.Contains("error") ||
+               lower.Contains("failed") ||
+               lower.Contains("exception") ||
+               lower.Contains("fatal") ||
+               line.StartsWith("E ");
+    }
+
+    private static bool IsWarningLine(string line)
+    {
+        var lower = line.ToLowerInvariant();
+        return lower.Contains("warning") ||
+               lower.Contains("warn") ||
+               lower.Contains("deprecated") ||
+               line.StartsWith("W ");
+    }
+
+    /// <summary>
+    /// Detects if content contains a diff.
+    /// </summary>
+    public static bool IsDiffContent(string content)
+    {
+        return content.Contains("diff --git") ||
+               content.Contains("@@") ||
+               Regex.IsMatch(content, @"^[+-](?![+-])", RegexOptions.Multiline);
+    }
+
+    /// <summary>
+    /// Detects if content is a code block.
+    /// </summary>
+    public static bool IsCodeBlock(string content)
+    {
+        return content.StartsWith("```") || content.Contains("\n```");
+    }
+
+    /// <summary>
+    /// Gets a compact summary for tool execution.
+    /// </summary>
+    public static string GetCompactSummary(string toolName, bool success, string? additionalInfo = null)
+    {
+        var icon = success ? Icons.Check : Icons.Cross;
+        var info = !string.IsNullOrEmpty(additionalInfo) ? $" ({additionalInfo})" : "";
+        return $"{Icons.Tool} {toolName} {icon}{info}";
     }
 }

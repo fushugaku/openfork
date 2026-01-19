@@ -1,0 +1,30 @@
+{
+  "name": "explore_and_plan",
+  "description": "Explore a codebase area and create a plan for modifications",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "area": {
+        "type": "string",
+        "description": "The area of the codebase to explore (e.g., 'authentication', 'api endpoints', 'database layer')"
+      },
+      "goal": {
+        "type": "string",
+        "description": "What you want to achieve or modify"
+      }
+    },
+    "required": ["area", "goal"]
+  },
+  "pipeline": [
+    {
+      "agent": "explore",
+      "prompt": "Explore the codebase to understand the {{area}} area. Find all relevant files, understand their structure, dependencies, and how they interact.",
+      "handoff": "full"
+    },
+    {
+      "agent": "planner-sub",
+      "prompt": "Based on the exploration, create a detailed plan to: {{goal}}. Include specific files to modify, changes needed, and any potential impacts or risks.",
+      "handoff": "last"
+    }
+  ]
+}

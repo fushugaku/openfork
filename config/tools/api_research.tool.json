@@ -1,0 +1,44 @@
+{
+  "name": "api_research",
+  "description": "Research an API, SDK, or service thoroughly - documentation, authentication, endpoints, best practices, and code examples",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "api": {
+        "type": "string",
+        "description": "The API or service to research (e.g., 'Stripe API', 'OpenAI API', 'AWS S3')"
+      },
+      "focus": {
+        "type": "string",
+        "description": "Specific areas to focus on (e.g., 'webhooks', 'authentication', 'rate limiting')"
+      },
+      "language": {
+        "type": "string",
+        "description": "Programming language for code examples (e.g., 'C#', 'TypeScript', 'Python')"
+      }
+    },
+    "required": ["api"]
+  },
+  "pipeline": [
+    {
+      "agent": "researcher",
+      "prompt": "Research the basics of: {{api}}\n\nFind and document:\n- Official documentation URL\n- Authentication methods (API keys, OAuth, etc.)\n- Base URLs and environments (sandbox/production)\n- Rate limits and quotas\n- Pricing model overview\n- SDK availability for {{language}}\n\nProvide direct links to relevant documentation pages.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research the practical usage of: {{api}}\n\nFocus areas: {{focus}}\n\nGather:\n- Key endpoints/methods for common operations\n- Request/response formats and examples\n- Error handling patterns and common error codes\n- Webhook setup if applicable\n- Best practices from official docs and community\n\nLook for official guides, tutorials, and code samples.",
+      "handoff": "full"
+    },
+    {
+      "agent": "researcher",
+      "prompt": "Research advanced topics and gotchas for: {{api}}\n\nFind:\n- Common pitfalls and how to avoid them\n- Performance optimization tips\n- Security considerations\n- Testing strategies (mocking, sandbox environments)\n- Community libraries and wrappers for {{language}}\n- Recent changes or deprecations to be aware of\n\nSearch Stack Overflow, GitHub issues, and dev blogs for real-world experiences.",
+      "handoff": "full"
+    },
+    {
+      "agent": "general",
+      "prompt": "Create a comprehensive API integration guide for: {{api}}\nTarget language: {{language}}\nFocus areas: {{focus}}\n\nStructure as:\n1. Quick Start (minimal code to get something working)\n2. Authentication Setup\n3. Core Operations (with code examples)\n4. Error Handling\n5. Best Practices Checklist\n6. Common Pitfalls to Avoid\n7. Useful Resources (links to docs, SDKs, community resources)\n\nMake the code examples practical and production-ready.",
+      "handoff": "last"
+    }
+  ]
+}

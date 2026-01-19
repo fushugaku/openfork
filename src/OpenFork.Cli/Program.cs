@@ -6,7 +6,9 @@ using OpenFork.Cli;
 using OpenFork.Cli.Tui;
 using OpenFork.Core.Abstractions;
 using OpenFork.Core.Config;
+using OpenFork.Core.Events;
 using OpenFork.Core.Lsp;
+using OpenFork.Core.Mcp;
 using OpenFork.Core.Services;
 using OpenFork.Core.Tools;
 using OpenFork.Providers;
@@ -14,6 +16,7 @@ using OpenFork.Search.Config;
 using OpenFork.Search.Services;
 using OpenFork.Storage;
 using OpenFork.Storage.Repositories;
+using Terminal.Gui;
 
 var configPath = Environment.GetEnvironmentVariable("OPENFORK_CONFIG")
                  ?? FindConfigPath() ?? Path.Combine(Environment.CurrentDirectory, "config", "appsettings.json");
@@ -45,15 +48,48 @@ using var host = Host.CreateDefaultBuilder(args)
         services.Configure<AppSettings>(configuration);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppSettings>>().Value);
 
-        services.AddHttpClient();
+        // Configure HttpClient with appropriate timeouts for streaming
+        services.AddHttpClient().ConfigureHttpClientDefaults(builder =>
+        {
+            builder.ConfigureHttpClient(client =>
+            {
+                // Long timeout for streaming responses (10 minutes)
+                client.Timeout = TimeSpan.FromMinutes(10);
+            });
+            builder.UseSocketsHttpHandler((handler, _) =>
+            {
+                // Keep connections alive longer for streaming
+                handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5);
+                handler.PooledConnectionLifetime = TimeSpan.FromMinutes(10);
+                handler.KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests;
+                handler.KeepAlivePingTimeout = TimeSpan.FromSeconds(30);
+                handler.KeepAlivePingDelay = TimeSpan.FromSeconds(60);
+                // Enable connection reuse
+                handler.EnableMultipleHttp2Connections = true;
+            });
+        });
         services.AddSingleton<SqliteConnectionFactory>();
         services.AddSingleton<SchemaInitializer>();
+
+        // Event Bus - core pub/sub system
+        services.AddSingleton<IEventBus, InMemoryEventBus>();
+
+        // Permission System
+        services.AddSingleton<InMemoryUserPromptService>();
+        services.AddSingleton<IUserPromptService>(sp => sp.GetRequiredService<InMemoryUserPromptService>());
+        services.AddSingleton<IPermissionService, PermissionService>();
+
+        // Token Management (3-Layer System)
+        services.AddSingleton<ITokenEstimator, TokenEstimator>();
+        services.AddSingleton<IOutputTruncationService, OutputTruncationService>();
+        services.AddSingleton<IOutputPruningService, OutputPruningService>();
+        services.AddScoped<ICompactionService, CompactionService>();
 
         services.AddSingleton<IProjectRepository, ProjectRepository>();
         services.AddSingleton<ISessionRepository, SessionRepository>();
         services.AddSingleton<IMessageRepository, MessageRepository>();
+        services.AddSingleton<IMessagePartRepository, MessagePartRepository>();
         services.AddSingleton<IAppStateRepository, AppStateRepository>();
-        services.AddSingleton<IAgentRepository, AgentRepository>();
         services.AddSingleton<IPipelineRepository, PipelineRepository>();
 
         services.AddSingleton<IProviderResolver, ProviderResolver>();
@@ -67,6 +103,25 @@ using var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<ChatService>();
         services.AddSingleton<AppStateService>();
         services.AddSingleton<BootstrapService>();
+
+        // Agent Registry (loads built-in + appsettings.json agents)
+        services.AddSingleton<IAgentRegistry, AgentRegistry>();
+
+        // Subagent System
+        services.AddSingleton<ISubSessionRepository, SubSessionRepository>();
+        services.AddSingleton<SubagentConcurrencyManager>();
+        services.AddSingleton<ISubagentService, SubagentService>();
+        services.AddSingleton<TaskTool>();
+
+        // Hooks System
+        services.AddSingleton<IHookService, HookService>();
+        services.AddSingleton<HookLoader>();
+
+        // Pipeline Tools
+        services.AddSingleton<IToolFileLoader, ToolFileLoader>();
+
+        // MCP Integration
+        services.AddSingleton<IMcpServerManager, McpServerManager>();
 
         services.AddSingleton(sp =>
         {
@@ -97,6 +152,7 @@ var schema = host.Services.GetRequiredService<SchemaInitializer>();
 await schema.InitializeAsync();
 
 var bootstrap = host.Services.GetRequiredService<BootstrapService>();
+bootstrap.ConfigDirectory = Path.GetDirectoryName(configPath);
 await bootstrap.InitializeAsync();
 
 var chatService = host.Services.GetRequiredService<ChatService>();
@@ -108,17 +164,44 @@ if (settings.Search.EnableSemanticSearch)
     chatService.SetHistoryProvider(historyProvider);
 }
 
+var logger = host.Services.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Program>>();
 var app = host.Services.GetRequiredService<ConsoleApp>();
 
-// Handle Ctrl+C to exit cleanly
-Console.CancelKeyPress += (sender, e) =>
+try
 {
-    // Allow default behavior - exit immediately
-    // This will interrupt any active Spectre.Console prompt
-    Environment.Exit(0);
-};
-
-await app.RunAsync(CancellationToken.None);
+    logger.LogInformation("Starting OpenFork TUI application...");
+    
+    // Initialize Terminal.Gui
+    logger.LogInformation("Calling Application.Init()...");
+    Application.Init();
+    logger.LogInformation("Application.Init() completed");
+    
+    // Verify Application.Top exists
+    if (Application.Top == null)
+    {
+        logger.LogError("Application.Top is null after Init()");
+        Console.WriteLine("ERROR: Application.Top is null after Init()");
+        return;
+    }
+    logger.LogInformation("Application.Top verified: {TopType}", Application.Top.GetType().Name);
+    
+    logger.LogInformation("Calling app.RunAsync()...");
+    await app.RunAsync(CancellationToken.None);
+    logger.LogInformation("app.RunAsync() completed");
+}
+catch (Exception ex)
+{
+    logger.LogError(ex, "Fatal error in main loop");
+    Console.WriteLine($"ERROR: {ex.Message}");
+    Console.WriteLine($"Stack: {ex.StackTrace}");
+}
+finally
+{
+    logger.LogInformation("Shutting down Terminal.Gui...");
+    // Clean shutdown
+    Application.Shutdown();
+    logger.LogInformation("Application shutdown complete");
+}
 
 static string? FindConfigPath()
 {

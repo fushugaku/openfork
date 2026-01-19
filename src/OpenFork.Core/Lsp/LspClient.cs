@@ -68,8 +68,23 @@ public class LspClient : IDisposable
         }
 
         var client = new LspClient(process, config.Id, rootPath, logger);
-        
-        _ = Task.Run(() => client.ReadMessagesAsync(client._cts.Token), ct);
+
+        // Start message reader with proper error handling
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await client.ReadMessagesAsync(client._cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when client is disposed
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "LSP message reader failed for {ServerId}", config.Id);
+            }
+        }, ct);
 
         try
         {
@@ -225,7 +240,17 @@ public class LspClient : IDisposable
     private void HandleDiagnostics(JsonElement paramsElement)
     {
         var uri = paramsElement.GetProperty("uri").GetString() ?? "";
-        var filePath = new Uri(uri).LocalPath;
+
+        string filePath;
+        try
+        {
+            filePath = new Uri(uri).LocalPath;
+        }
+        catch (UriFormatException ex)
+        {
+            _logger.LogWarning(ex, "Invalid URI in diagnostics: {Uri}", uri);
+            return;
+        }
 
         var diags = new List<LspDiagnostic>();
         if (paramsElement.TryGetProperty("diagnostics", out var diagsArray))

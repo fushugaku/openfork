@@ -83,7 +83,7 @@ public class GrepTool : ITool
 
             Regex? includeRegex = null;
             if (!string.IsNullOrEmpty(args.Include))
-                includeRegex = GlobToRegex(args.Include);
+                includeRegex = GlobHelper.SimpleGlobToRegex(args.Include);
 
             var matches = new List<(string path, DateTime mtime, int lineNum, string lineText)>();
             var truncated = false;
@@ -114,7 +114,7 @@ public class GrepTool : ITool
                         var mtime = File.GetLastWriteTimeUtc(file);
                         var lines = File.ReadLines(file);
                         var lineNum = 0;
-                        
+
                         foreach (var line in lines)
                         {
                             lineNum++;
@@ -130,8 +130,13 @@ public class GrepTool : ITool
                             }
                         }
                     }
-                    catch
+                    catch (IOException)
                     {
+                        // Skip files that can't be read (locked, deleted, etc.)
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // Skip files without read permission
                     }
                 }
             });
@@ -184,14 +189,16 @@ public class GrepTool : ITool
 
             string[] files;
             try { files = Directory.GetFiles(currentDir); }
-            catch { continue; }
+            catch (UnauthorizedAccessException) { continue; }
+            catch (IOException) { continue; }
 
             foreach (var file in files)
                 yield return file;
 
             string[] subdirs;
             try { subdirs = Directory.GetDirectories(currentDir); }
-            catch { continue; }
+            catch (UnauthorizedAccessException) { continue; }
+            catch (IOException) { continue; }
 
             foreach (var subdir in subdirs)
             {
@@ -200,28 +207,6 @@ public class GrepTool : ITool
                     stack.Push(subdir);
             }
         }
-    }
-
-    private static Regex GlobToRegex(string pattern)
-    {
-        var regexPattern = "^";
-
-        foreach (var c in pattern)
-        {
-            regexPattern += c switch
-            {
-                '*' => ".*",
-                '?' => ".",
-                '.' => "\\.",
-                '{' => "(",
-                '}' => ")",
-                ',' => "|",
-                _ => Regex.Escape(c.ToString())
-            };
-        }
-
-        regexPattern += "$";
-        return new Regex(regexPattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
     private record GrepArgs(

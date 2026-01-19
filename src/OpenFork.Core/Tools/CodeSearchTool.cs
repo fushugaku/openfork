@@ -96,6 +96,7 @@ public class CodeSearchTool : ITool
             var responseText = await response.Content.ReadAsStringAsync(cts.Token);
 
             var lines = responseText.Split('\n');
+            string? lastParseError = null;
             foreach (var line in lines)
             {
                 if (line.StartsWith("data: "))
@@ -112,10 +113,17 @@ public class CodeSearchTool : ITool
                             return new ToolResult(true, data.Result.Content[0].Text ?? "No content");
                         }
                     }
-                    catch
+                    catch (JsonException ex)
                     {
+                        // Track parse error but continue trying other lines
+                        lastParseError = ex.Message;
                     }
                 }
+            }
+
+            if (lastParseError != null)
+            {
+                return new ToolResult(false, $"Failed to parse code search response: {lastParseError}");
             }
 
             return new ToolResult(true, "No code snippets or documentation found. Try a different query or be more specific about the library or programming concept.");

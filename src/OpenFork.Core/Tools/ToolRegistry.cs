@@ -1,4 +1,5 @@
 using OpenFork.Core.Chat;
+using OpenFork.Core.Domain;
 using OpenFork.Core.Lsp;
 
 namespace OpenFork.Core.Tools;
@@ -54,6 +55,34 @@ public class ToolRegistry
         }).ToList();
     }
 
+    /// <summary>
+    /// Gets tool definitions filtered by the agent's tool configuration.
+    /// </summary>
+    public List<ToolDefinition> GetFilteredToolDefinitions(ToolConfiguration config)
+    {
+        var filteredTools = config.Mode switch
+        {
+            ToolFilterMode.All => _tools.Values,
+            ToolFilterMode.None => Enumerable.Empty<ITool>(),
+            ToolFilterMode.OnlyThese => _tools.Values.Where(t =>
+                config.ToolList.Contains(t.Name, StringComparer.OrdinalIgnoreCase)),
+            ToolFilterMode.AllExcept => _tools.Values.Where(t =>
+                !config.ToolList.Contains(t.Name, StringComparer.OrdinalIgnoreCase)),
+            _ => _tools.Values
+        };
+
+        return filteredTools.Select(t => new ToolDefinition
+        {
+            Type = "function",
+            Function = new ToolDefinitionFunction
+            {
+                Name = t.Name,
+                Description = t.Description,
+                Parameters = t.ParametersSchema
+            }
+        }).ToList();
+    }
+
     public async Task<ToolResult> ExecuteAsync(string toolName, string arguments, ToolContext context)
     {
         var tool = Get(toolName);
@@ -61,5 +90,26 @@ public class ToolRegistry
             return new ToolResult(false, $"Unknown tool: {toolName}");
 
         return await tool.ExecuteAsync(arguments, context);
+    }
+
+    /// <summary>
+    /// Gets all registered pipeline tools (tools loaded from *.tool.json files).
+    /// </summary>
+    public IEnumerable<PipelineTool> GetPipelineTools()
+    {
+        return _tools.Values.OfType<PipelineTool>();
+    }
+
+    /// <summary>
+    /// Gets pipeline tool names that match a prefix (for autocomplete).
+    /// </summary>
+    public IEnumerable<string> GetPipelineToolNamesMatching(string prefix)
+    {
+        var normalizedPrefix = prefix.TrimStart('/').ToLowerInvariant();
+
+        return GetPipelineTools()
+            .Where(t => t.Name.ToLowerInvariant().StartsWith(normalizedPrefix))
+            .Select(t => t.Name)
+            .OrderBy(n => n);
     }
 }

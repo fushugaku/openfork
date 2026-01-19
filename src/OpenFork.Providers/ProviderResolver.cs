@@ -34,6 +34,10 @@ public class ProviderResolver : IProviderResolver
             {
                 return _providers.Values.First();
             }
+
+            // Multiple providers exist but no key specified
+            var available = string.Join(", ", _providers.Keys.OrderBy(k => k));
+            throw new InvalidOperationException($"No provider key specified. Available providers: {available}. Please specify a provider key.");
         }
 
         if (_providers.TryGetValue(providerKey, out var provider))
@@ -41,8 +45,8 @@ public class ProviderResolver : IProviderResolver
             return provider;
         }
 
-        var available = string.Join(", ", _providers.Keys.OrderBy(k => k));
-        throw new InvalidOperationException($"Provider not found: {providerKey}. Available: {available}");
+        var availableKeys = string.Join(", ", _providers.Keys.OrderBy(k => k));
+        throw new InvalidOperationException($"Provider not found: '{providerKey}'. Available: {availableKeys}");
     }
 
     public ModelInfo? GetModelInfo(string providerKey, string model)
@@ -52,5 +56,25 @@ public class ProviderResolver : IProviderResolver
 
         return provider.AvailableModels.FirstOrDefault(m =>
             string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public (IChatProvider Provider, string ProviderKey, ModelInfo Model)? ResolveByModel(string modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+            return null;
+
+        // Search all providers for a model with the given name
+        foreach (var (providerKey, config) in _settings.OpenAiCompatible)
+        {
+            var model = config.AvailableModels.FirstOrDefault(m =>
+                string.Equals(m.Name, modelName, StringComparison.OrdinalIgnoreCase));
+
+            if (model != null && _providers.TryGetValue(providerKey, out var provider))
+            {
+                return (provider, providerKey, model);
+            }
+        }
+
+        return null;
     }
 }
